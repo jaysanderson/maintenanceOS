@@ -145,7 +145,7 @@ export default function Layout({ children }: { children: ReactNode }) {
           <h1 className="text-lg font-semibold">{title}</h1>
           <div className="flex items-center gap-4">
             <a
-              href="http://localhost:4000/docs"
+              href="/docs"
               target="_blank"
               rel="noreferrer"
               className="text-xs font-medium text-brand-600 hover:underline"
