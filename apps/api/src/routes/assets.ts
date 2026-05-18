@@ -1,7 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { prisma } from "../prisma.js";
-import { parse } from "../lib/validate.js";
 import { notFound } from "../lib/errors.js";
 import { ASSET_TYPES, ASSET_STATUSES } from "../lib/enums.js";
 
@@ -15,6 +14,8 @@ const upsertSchema = z.object({
   serviceDueAt: z.coerce.date().optional().nullable(),
 });
 
+const idParam = z.object({ id: z.string() });
+
 export async function assetRoutes(app: FastifyInstance) {
   app.get("/", { schema: { tags: ["Assets"], summary: "List assets" } }, async () =>
     prisma.asset.findMany({
@@ -23,17 +24,17 @@ export async function assetRoutes(app: FastifyInstance) {
     })
   );
 
-  app.post("/", { schema: { tags: ["Assets"], summary: "Create asset" } }, async (req, reply) => {
-    const data = parse(upsertSchema, req.body);
+  app.post("/", { schema: { tags: ["Assets"], summary: "Create asset", body: upsertSchema } }, async (req, reply) => {
+    const data = req.body as z.infer<typeof upsertSchema>;
     reply.status(201);
     return prisma.asset.create({ data });
   });
 
-  app.put("/:id", { schema: { tags: ["Assets"], summary: "Update asset" } }, async (req) => {
-    const { id } = req.params as { id: string };
+  app.put("/:id", { schema: { tags: ["Assets"], summary: "Update asset", params: idParam, body: upsertSchema.partial() } }, async (req) => {
+    const { id } = req.params as z.infer<typeof idParam>;
     const existing = await prisma.asset.findUnique({ where: { id } });
     if (!existing) throw notFound("Asset");
-    const data = parse(upsertSchema.partial(), req.body);
+    const data = req.body as Partial<z.infer<typeof upsertSchema>>;
     return prisma.asset.update({ where: { id }, data });
   });
 }

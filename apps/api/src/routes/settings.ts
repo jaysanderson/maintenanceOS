@@ -1,6 +1,5 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { parse } from "../lib/validate.js";
 import { requireRole } from "../auth-guard.js";
 import { ADMIN_ROLES } from "../lib/auth.js";
 import { getCompanyConfig, updateCompanyConfig } from "../lib/config.js";
@@ -27,11 +26,11 @@ export async function settingsRoutes(app: FastifyInstance) {
   app.put(
     "/",
     {
-      schema: { tags: ["Settings"], summary: "Update settings (Admin/Manager)" },
+      schema: { tags: ["Settings"], summary: "Update settings (Admin/Manager)", body: putSchema },
       preHandler: requireRole(...ADMIN_ROLES),
     },
     async (req) => {
-      const body = parse(putSchema, req.body);
+      const body = req.body as z.infer<typeof putSchema>;
       await updateCompanyConfig({
         "company.name": body.companyName,
         "company.abn": body.abn,

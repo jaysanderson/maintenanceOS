@@ -1,7 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { prisma } from "../prisma.js";
-import { parse } from "../lib/validate.js";
 import { notFound, badRequest, conflict } from "../lib/errors.js";
 import { nextWorkOrderNumber } from "../lib/numbering.js";
 import { computeJobCosting } from "../lib/costing.js";
@@ -66,6 +65,37 @@ const createSchema = z.object({
   internalNotes: z.string().optional().nullable(),
 });
 
+const idParam = z.object({ id: z.string() });
+const entryParams = z.object({ id: z.string(), entryId: z.string() });
+const listQuery = z.object({
+  status: z.string().optional(),
+  priority: z.string().optional(),
+  assignedEmployeeId: z.string().optional(),
+  accountId: z.string().optional(),
+  unassigned: z.string().optional(),
+  dueBefore: z.string().optional(),
+  q: z.string().optional(),
+  limit: z.coerce.number().int().positive().max(500).optional(),
+  offset: z.coerce.number().int().nonnegative().optional(),
+});
+const statusSchema = z.object({ status: z.enum(WORK_ORDER_STATUSES) });
+const assignSchema = z.object({ assignedEmployeeId: z.string().nullable() });
+const scheduleSchema = z.object({
+  scheduledStart: z.coerce.date().nullable(),
+  scheduledEnd: z.coerce.date().nullable(),
+});
+const completeSchema = z.object({
+  actualHours: z.number().nonnegative(),
+  completionNotes: z.string().optional().nullable(),
+});
+const timeEntrySchema = z.object({
+  employeeId: z.string().min(1),
+  hours: z.number().positive(),
+  date: z.coerce.date().optional(),
+  notes: z.string().optional().nullable(),
+  billable: z.boolean().optional(),
+});
+
 const woInclude = {
   account: true,
   site: true,
@@ -81,9 +111,9 @@ const woInclude = {
 };
 
 export async function workOrderRoutes(app: FastifyInstance) {
-  app.get("/", { schema: { tags: ["Work Orders"], summary: "List work orders (filter/search/paginate)" } }, async (req, reply) => {
+  app.get("/", { schema: { tags: ["Work Orders"], summary: "List work orders (filter/search/paginate)", querystring: listQuery } }, async (req, reply) => {
     const { status, priority, assignedEmployeeId, accountId, unassigned, dueBefore, q, limit, offset } =
-      req.query as Record<string, string | undefined>;
+      req.query as z.infer<typeof listQuery>;
 
     const where: Record<string, unknown> = {};
     if (status) where.status = status;
@@ -105,14 +135,14 @@ export async function workOrderRoutes(app: FastifyInstance) {
       where,
       orderBy: [{ createdAt: "desc" }],
       include: woInclude,
-      ...(limit ? { take: Math.min(Number(limit), 500) } : {}),
-      ...(offset ? { skip: Number(offset) } : {}),
+      ...(limit ? { take: limit } : {}),
+      ...(offset ? { skip: offset } : {}),
     });
     return orders.map(withSla);
   });
 
-  app.get("/:id", { schema: { tags: ["Work Orders"], summary: "Get work order" } }, async (req) => {
-    const { id } = req.params as { id: string };
+  app.get("/:id", { schema: { tags: ["Work Orders"], summary: "Get work order with full detail", params: idParam } }, async (req) => {
+    const { id } = req.params as z.infer<typeof idParam>;
     const wo = await prisma.workOrder.findUnique({
       where: { id },
       include: {
@@ -124,15 +154,15 @@ export async function workOrderRoutes(app: FastifyInstance) {
     return withSla(wo);
   });
 
-  app.get("/:id/costing", { schema: { tags: ["Work Orders"], summary: "Job costing & margin" } }, async (req) => {
-    const { id } = req.params as { id: string };
+  app.get("/:id/costing", { schema: { tags: ["Work Orders"], summary: "Job costing & margin", params: idParam } }, async (req) => {
+    const { id } = req.params as z.infer<typeof idParam>;
     const costing = await computeJobCosting(id);
     if (!costing) throw notFound("Work order");
     return costing;
   });
 
-  app.post("/", { schema: { tags: ["Work Orders"], summary: "Create work order" } }, async (req, reply) => {
-    const data = parse(createSchema, req.body);
+  app.post("/", { schema: { tags: ["Work Orders"], summary: "Create work order", body: createSchema } }, async (req, reply) => {
+    const data = req.body as z.infer<typeof createSchema>;
     const { requiredSkillIds, ...rest } = data;
     const workOrderNumber = await nextWorkOrderNumber();
     const wo = await prisma.workOrder.create({
@@ -150,9 +180,9 @@ export async function workOrderRoutes(app: FastifyInstance) {
     return withSla(wo);
   });
 
-  app.put("/:id", { schema: { tags: ["Work Orders"], summary: "Update work order" } }, async (req) => {
-    const { id } = req.params as { id: string };
-    const data = parse(createSchema.partial(), req.body);
+  app.put("/:id", { schema: { tags: ["Work Orders"], summary: "Update work order", params: idParam, body: createSchema.partial() } }, async (req) => {
+    const { id } = req.params as z.infer<typeof idParam>;
+    const data = req.body as Partial<z.infer<typeof createSchema>>;
     const { requiredSkillIds, ...rest } = data;
     const existing = await prisma.workOrder.findUnique({ where: { id } });
     if (!existing) throw notFound("Work order");
@@ -171,12 +201,9 @@ export async function workOrderRoutes(app: FastifyInstance) {
     return withSla(wo);
   });
 
-  app.patch("/:id/status", { schema: { tags: ["Work Orders"], summary: "Change status" } }, async (req) => {
-    const { id } = req.params as { id: string };
-    const { status } = parse(
-      z.object({ status: z.enum(WORK_ORDER_STATUSES) }),
-      req.body
-    );
+  app.patch("/:id/status", { schema: { tags: ["Work Orders"], summary: "Change work order status (validated transitions)", params: idParam, body: statusSchema } }, async (req) => {
+    const { id } = req.params as z.infer<typeof idParam>;
+    const { status } = req.body as z.infer<typeof statusSchema>;
     const existing = await prisma.workOrder.findUnique({ where: { id } });
     if (!existing) throw notFound("Work order");
     assertTransition(existing.status, status);
@@ -194,12 +221,9 @@ export async function workOrderRoutes(app: FastifyInstance) {
     return withSla(wo);
   });
 
-  app.patch("/:id/assign", { schema: { tags: ["Work Orders"], summary: "Assign technician" } }, async (req) => {
-    const { id } = req.params as { id: string };
-    const { assignedEmployeeId } = parse(
-      z.object({ assignedEmployeeId: z.string().nullable() }),
-      req.body
-    );
+  app.patch("/:id/assign", { schema: { tags: ["Work Orders"], summary: "Assign technician", params: idParam, body: assignSchema } }, async (req) => {
+    const { id } = req.params as z.infer<typeof idParam>;
+    const { assignedEmployeeId } = req.body as z.infer<typeof assignSchema>;
     const existing = await prisma.workOrder.findUnique({ where: { id } });
     if (!existing) throw notFound("Work order");
     const advance =
@@ -226,15 +250,9 @@ export async function workOrderRoutes(app: FastifyInstance) {
     return withSla(wo);
   });
 
-  app.patch("/:id/schedule", { schema: { tags: ["Work Orders"], summary: "Set schedule window" } }, async (req) => {
-    const { id } = req.params as { id: string };
-    const body = parse(
-      z.object({
-        scheduledStart: z.coerce.date().nullable(),
-        scheduledEnd: z.coerce.date().nullable(),
-      }),
-      req.body
-    );
+  app.patch("/:id/schedule", { schema: { tags: ["Work Orders"], summary: "Set schedule window", params: idParam, body: scheduleSchema } }, async (req) => {
+    const { id } = req.params as z.infer<typeof idParam>;
+    const body = req.body as z.infer<typeof scheduleSchema>;
     if (body.scheduledStart && body.scheduledEnd && body.scheduledEnd < body.scheduledStart) {
       throw badRequest("scheduledEnd must be after scheduledStart");
     }
@@ -253,15 +271,9 @@ export async function workOrderRoutes(app: FastifyInstance) {
     return withSla(wo);
   });
 
-  app.post("/:id/complete", { schema: { tags: ["Work Orders"], summary: "Complete work order" } }, async (req) => {
-    const { id } = req.params as { id: string };
-    const { actualHours, completionNotes } = parse(
-      z.object({
-        actualHours: z.number().nonnegative(),
-        completionNotes: z.string().optional().nullable(),
-      }),
-      req.body
-    );
+  app.post("/:id/complete", { schema: { tags: ["Work Orders"], summary: "Complete work order", params: idParam, body: completeSchema } }, async (req) => {
+    const { id } = req.params as z.infer<typeof idParam>;
+    const { actualHours, completionNotes } = req.body as z.infer<typeof completeSchema>;
     const existing = await prisma.workOrder.findUnique({ where: { id } });
     if (!existing) throw notFound("Work order");
     const wo = await prisma.workOrder.update({
@@ -278,8 +290,8 @@ export async function workOrderRoutes(app: FastifyInstance) {
     return withSla(wo);
   });
 
-  app.delete("/:id", { schema: { tags: ["Work Orders"], summary: "Delete work order" } }, async (req, reply) => {
-    const { id } = req.params as { id: string };
+  app.delete("/:id", { schema: { tags: ["Work Orders"], summary: "Delete work order (only if no invoices)", params: idParam } }, async (req, reply) => {
+    const { id } = req.params as z.infer<typeof idParam>;
     const existing = await prisma.workOrder.findUnique({
       where: { id },
       include: { invoices: true },
@@ -303,8 +315,8 @@ export async function workOrderRoutes(app: FastifyInstance) {
   });
 
   // ---- Timesheets ----
-  app.get("/:id/time-entries", { schema: { tags: ["Work Orders"], summary: "List time entries" } }, async (req) => {
-    const { id } = req.params as { id: string };
+  app.get("/:id/time-entries", { schema: { tags: ["Work Orders"], summary: "List time entries", params: idParam } }, async (req) => {
+    const { id } = req.params as z.infer<typeof idParam>;
     return prisma.timeEntry.findMany({
       where: { workOrderId: id },
       include: { employee: true },
@@ -312,18 +324,9 @@ export async function workOrderRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post("/:id/time-entries", { schema: { tags: ["Work Orders"], summary: "Log time against a work order" } }, async (req, reply) => {
-    const { id } = req.params as { id: string };
-    const body = parse(
-      z.object({
-        employeeId: z.string().min(1),
-        hours: z.number().positive(),
-        date: z.coerce.date().optional(),
-        notes: z.string().optional().nullable(),
-        billable: z.boolean().optional(),
-      }),
-      req.body
-    );
+  app.post("/:id/time-entries", { schema: { tags: ["Work Orders"], summary: "Log time against a work order", params: idParam, body: timeEntrySchema } }, async (req, reply) => {
+    const { id } = req.params as z.infer<typeof idParam>;
+    const body = req.body as z.infer<typeof timeEntrySchema>;
     const wo = await prisma.workOrder.findUnique({ where: { id } });
     if (!wo) throw notFound("Work order");
     const entry = await prisma.timeEntry.create({
@@ -347,8 +350,8 @@ export async function workOrderRoutes(app: FastifyInstance) {
     return entry;
   });
 
-  app.delete("/:id/time-entries/:entryId", { schema: { tags: ["Work Orders"], summary: "Delete a time entry" } }, async (req, reply) => {
-    const { entryId } = req.params as { entryId: string };
+  app.delete("/:id/time-entries/:entryId", { schema: { tags: ["Work Orders"], summary: "Delete a time entry", params: entryParams } }, async (req, reply) => {
+    const { entryId } = req.params as z.infer<typeof entryParams>;
     await prisma.timeEntry.deleteMany({ where: { id: entryId } });
     reply.status(204);
     return null;

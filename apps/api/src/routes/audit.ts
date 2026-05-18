@@ -1,20 +1,28 @@
 import type { FastifyInstance } from "fastify";
+import { z } from "zod";
 import { prisma } from "../prisma.js";
 import { requireRole } from "../auth-guard.js";
 import { ADMIN_ROLES } from "../lib/auth.js";
+
+const listQuery = z.object({
+  page: z.coerce.number().int().positive().optional(),
+  pageSize: z.coerce.number().int().positive().optional(),
+  action: z.string().optional(),
+  entity: z.string().optional(),
+});
 
 export async function auditRoutes(app: FastifyInstance) {
   app.get(
     "/",
     {
-      schema: { tags: ["Audit"], summary: "Recent audit log (Admin/Manager)" },
+      schema: { tags: ["Audit"], summary: "Recent audit log, filterable & paginated (Admin/Manager)", querystring: listQuery },
       preHandler: requireRole(...ADMIN_ROLES),
     },
     async (req) => {
-      const { page = "1", pageSize = "50", action, entity } =
-        req.query as Record<string, string>;
-      const take = Math.min(Number(pageSize) || 50, 200);
-      const skip = (Math.max(Number(page) || 1, 1) - 1) * take;
+      const { page, pageSize, action, entity } =
+        req.query as z.infer<typeof listQuery>;
+      const take = Math.min(pageSize || 50, 200);
+      const skip = (Math.max(page || 1, 1) - 1) * take;
       const where = {
         ...(action ? { action } : {}),
         ...(entity ? { entity } : {}),
@@ -28,7 +36,7 @@ export async function auditRoutes(app: FastifyInstance) {
           take,
         }),
       ]);
-      return { data, total, page: Number(page) || 1, pageSize: take };
+      return { data, total, page: page || 1, pageSize: take };
     }
   );
 }

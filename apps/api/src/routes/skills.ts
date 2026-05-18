@@ -1,7 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { prisma } from "../prisma.js";
-import { parse } from "../lib/validate.js";
 
 const skillSchema = z.object({
   name: z.string().min(1),
@@ -16,8 +15,8 @@ export async function skillRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post("/skills", { schema: { tags: ["Skills"], summary: "Create skill" } }, async (req, reply) => {
-    const data = parse(skillSchema, req.body);
+  app.post("/skills", { schema: { tags: ["Skills"], summary: "Create skill", body: skillSchema } }, async (req, reply) => {
+    const data = req.body as z.infer<typeof skillSchema>;
     reply.status(201);
     return prisma.skill.create({ data });
   });

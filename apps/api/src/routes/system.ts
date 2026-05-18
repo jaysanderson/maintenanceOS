@@ -4,11 +4,12 @@ import { copyFile, mkdir, readdir, stat } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { prisma } from "../prisma.js";
-import { parse } from "../lib/validate.js";
 import { requireRole } from "../auth-guard.js";
 import { ADMIN_ROLES } from "../lib/auth.js";
 import { audit } from "../lib/audit.js";
 import { seedDatabase } from "../../prisma/seed-core.js";
+
+const resetSchema = z.object({ confirm: z.literal(true) });
 
 const apiRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const DB_PATH = join(apiRoot, "prisma", "dev.db");
@@ -25,11 +26,12 @@ export async function systemRoutes(app: FastifyInstance) {
   app.post(
     "/reset",
     {
-      schema: { tags: ["System"], summary: "Reset demo data (Admin/Manager)" },
+      schema: { tags: ["System"], summary: "Reset demo data — wipe & re-seed (Admin/Manager)", body: resetSchema },
       preHandler: requireRole(...ADMIN_ROLES),
     },
     async (req) => {
-      parse(z.object({ confirm: z.literal(true) }), req.body);
+      const { confirm } = req.body as z.infer<typeof resetSchema>;
+      void confirm;
       const counts = await seedDatabase(prisma);
       await audit(req.authUser, {
         action: "DEMO_RESET",

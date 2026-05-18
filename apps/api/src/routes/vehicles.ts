@@ -1,7 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { prisma } from "../prisma.js";
-import { parse } from "../lib/validate.js";
 import { notFound } from "../lib/errors.js";
 
 const upsertSchema = z.object({
@@ -17,6 +16,8 @@ const upsertSchema = z.object({
   active: z.boolean().optional(),
 });
 
+const idParam = z.object({ id: z.string() });
+
 export async function vehicleRoutes(app: FastifyInstance) {
   app.get("/", { schema: { tags: ["Vehicles"], summary: "List vehicles" } }, async () => {
     const vehicles = await prisma.vehicle.findMany({
@@ -31,17 +32,17 @@ export async function vehicleRoutes(app: FastifyInstance) {
     }));
   });
 
-  app.post("/", { schema: { tags: ["Vehicles"], summary: "Create vehicle" } }, async (req, reply) => {
-    const data = parse(upsertSchema, req.body);
+  app.post("/", { schema: { tags: ["Vehicles"], summary: "Create vehicle", body: upsertSchema } }, async (req, reply) => {
+    const data = req.body as z.infer<typeof upsertSchema>;
     reply.status(201);
     return prisma.vehicle.create({ data });
   });
 
-  app.put("/:id", { schema: { tags: ["Vehicles"], summary: "Update vehicle" } }, async (req) => {
-    const { id } = req.params as { id: string };
+  app.put("/:id", { schema: { tags: ["Vehicles"], summary: "Update vehicle", params: idParam, body: upsertSchema.partial() } }, async (req) => {
+    const { id } = req.params as z.infer<typeof idParam>;
     const existing = await prisma.vehicle.findUnique({ where: { id } });
     if (!existing) throw notFound("Vehicle");
-    const data = parse(upsertSchema.partial(), req.body);
+    const data = req.body as Partial<z.infer<typeof upsertSchema>>;
     return prisma.vehicle.update({ where: { id }, data });
   });
 }

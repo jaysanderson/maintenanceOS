@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { z } from "zod";
 import { createWriteStream, createReadStream, existsSync } from "node:fs";
 import { unlink, mkdir } from "node:fs/promises";
 import { pipeline } from "node:stream/promises";
@@ -16,6 +17,9 @@ const UPLOAD_DIR = join(
   "uploads"
 );
 
+const idParam = z.object({ id: z.string() });
+const attIdParam = z.object({ attId: z.string() });
+
 function kindFor(mime: string): string {
   if (mime.startsWith("image/")) return "PHOTO";
   return "DOCUMENT";
@@ -24,9 +28,9 @@ function kindFor(mime: string): string {
 export async function attachmentRoutes(app: FastifyInstance) {
   app.post(
     "/work-orders/:id/attachments",
-    { schema: { tags: ["Attachments"], summary: "Upload a file to a work order" } },
+    { schema: { tags: ["Attachments"], summary: "Upload a file to a work order (multipart)", params: idParam } },
     async (req, reply) => {
-      const { id } = req.params as { id: string };
+      const { id } = req.params as z.infer<typeof idParam>;
       const wo = await prisma.workOrder.findUnique({ where: { id } });
       if (!wo) throw notFound("Work order");
 
@@ -68,9 +72,9 @@ export async function attachmentRoutes(app: FastifyInstance) {
 
   app.get(
     "/work-orders/:id/attachments",
-    { schema: { tags: ["Attachments"], summary: "List work order attachments" } },
+    { schema: { tags: ["Attachments"], summary: "List work order attachments", params: idParam } },
     async (req) => {
-      const { id } = req.params as { id: string };
+      const { id } = req.params as z.infer<typeof idParam>;
       return prisma.attachment.findMany({
         where: { workOrderId: id },
         orderBy: { createdAt: "desc" },
@@ -80,9 +84,9 @@ export async function attachmentRoutes(app: FastifyInstance) {
 
   app.get(
     "/attachments/:attId/download",
-    { schema: { tags: ["Attachments"], summary: "Download an attachment" } },
+    { schema: { tags: ["Attachments"], summary: "Download an attachment", params: attIdParam } },
     async (req, reply) => {
-      const { attId } = req.params as { attId: string };
+      const { attId } = req.params as z.infer<typeof attIdParam>;
       const att = await prisma.attachment.findUnique({ where: { id: attId } });
       if (!att) throw notFound("Attachment");
       const path = join(UPLOAD_DIR, att.storedName);
@@ -98,9 +102,9 @@ export async function attachmentRoutes(app: FastifyInstance) {
 
   app.delete(
     "/attachments/:attId",
-    { schema: { tags: ["Attachments"], summary: "Delete an attachment" } },
+    { schema: { tags: ["Attachments"], summary: "Delete an attachment", params: attIdParam } },
     async (req, reply) => {
-      const { attId } = req.params as { attId: string };
+      const { attId } = req.params as z.infer<typeof attIdParam>;
       const att = await prisma.attachment.findUnique({ where: { id: attId } });
       if (!att) throw notFound("Attachment");
       await unlink(join(UPLOAD_DIR, att.storedName)).catch(() => {});

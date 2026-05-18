@@ -1,7 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { prisma } from "../prisma.js";
-import { parse } from "../lib/validate.js";
 import { notFound } from "../lib/errors.js";
 
 const upsertSchema = z.object({
@@ -14,6 +13,8 @@ const upsertSchema = z.object({
   notes: z.string().optional().nullable(),
 });
 
+const idParam = z.object({ id: z.string() });
+
 export async function supplierRoutes(app: FastifyInstance) {
   app.get("/", { schema: { tags: ["Suppliers"], summary: "List suppliers" } }, async () =>
     prisma.supplier.findMany({
@@ -22,8 +23,8 @@ export async function supplierRoutes(app: FastifyInstance) {
     })
   );
 
-  app.get("/:id", { schema: { tags: ["Suppliers"], summary: "Get supplier" } }, async (req) => {
-    const { id } = req.params as { id: string };
+  app.get("/:id", { schema: { tags: ["Suppliers"], summary: "Get supplier with purchase orders", params: idParam } }, async (req) => {
+    const { id } = req.params as z.infer<typeof idParam>;
     const supplier = await prisma.supplier.findUnique({
       where: { id },
       include: { purchaseOrders: { orderBy: { createdAt: "desc" } } },
@@ -32,17 +33,17 @@ export async function supplierRoutes(app: FastifyInstance) {
     return supplier;
   });
 
-  app.post("/", { schema: { tags: ["Suppliers"], summary: "Create supplier" } }, async (req, reply) => {
-    const data = parse(upsertSchema, req.body);
+  app.post("/", { schema: { tags: ["Suppliers"], summary: "Create supplier", body: upsertSchema } }, async (req, reply) => {
+    const data = req.body as z.infer<typeof upsertSchema>;
     reply.status(201);
     return prisma.supplier.create({ data });
   });
 
-  app.put("/:id", { schema: { tags: ["Suppliers"], summary: "Update supplier" } }, async (req) => {
-    const { id } = req.params as { id: string };
+  app.put("/:id", { schema: { tags: ["Suppliers"], summary: "Update supplier", params: idParam, body: upsertSchema.partial() } }, async (req) => {
+    const { id } = req.params as z.infer<typeof idParam>;
     const existing = await prisma.supplier.findUnique({ where: { id } });
     if (!existing) throw notFound("Supplier");
-    const data = parse(upsertSchema.partial(), req.body);
+    const data = req.body as Partial<z.infer<typeof upsertSchema>>;
     return prisma.supplier.update({ where: { id }, data });
   });
 }

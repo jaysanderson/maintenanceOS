@@ -1,5 +1,8 @@
 import type { FastifyInstance } from "fastify";
+import { z } from "zod";
 import { prisma } from "../prisma.js";
+
+const idParam = z.object({ id: z.string() });
 
 export async function notificationRoutes(app: FastifyInstance) {
   app.get(
@@ -19,9 +22,9 @@ export async function notificationRoutes(app: FastifyInstance) {
 
   app.post(
     "/:id/read",
-    { schema: { tags: ["Notifications"], summary: "Mark notification read" } },
+    { schema: { tags: ["Notifications"], summary: "Mark notification read", params: idParam } },
     async (req) => {
-      const { id } = req.params as { id: string };
+      const { id } = req.params as z.infer<typeof idParam>;
       await prisma.notification.updateMany({
         where: { id },
         data: { read: true },

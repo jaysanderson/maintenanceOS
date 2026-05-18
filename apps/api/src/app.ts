@@ -10,6 +10,12 @@ import swaggerUi from "@fastify/swagger-ui";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { existsSync } from "node:fs";
+import {
+  serializerCompiler,
+  validatorCompiler,
+  jsonSchemaTransform,
+  ResponseValidationError,
+} from "fastify-type-provider-zod";
 import { ApiError } from "./lib/errors.js";
 import { ZodError } from "zod";
 import { JWT_SECRET, ADMIN_ROLES } from "./lib/auth.js";
@@ -43,6 +49,11 @@ export async function buildApp(): Promise<FastifyInstance> {
     bodyLimit: 1_048_576, // 1 MB
   });
 
+  // Zod is the single source of truth: route `schema` Zod objects drive
+  // request validation AND the OpenAPI doc (via jsonSchemaTransform).
+  app.setValidatorCompiler(validatorCompiler);
+  app.setSerializerCompiler(serializerCompiler);
+
   await app.register(helmet, { contentSecurityPolicy: false });
 
   const corsOrigin = process.env.CORS_ORIGIN
@@ -65,42 +76,90 @@ export async function buildApp(): Promise<FastifyInstance> {
     openapi: {
       info: {
         title: "MaintenanceOS API",
-        description:
-          "API-first ERP for a property maintenance business. Account → Site → Work Order → Quote → Approval → Schedule → Assignment → Completion → Invoice → Margin. Authenticated; send 'Authorization: Bearer <token>'.",
         version: "1.0.0",
+        description: [
+          "**API-first ERP for a mid-sized property & handyman maintenance business.**",
+          "",
+          "The whole product is built on this API — the web app only ever talks to these endpoints, never the database.",
+          "",
+          "### Core flow",
+          "`Account → Site → Work Order → Quote → Approval → Schedule → Technician Assignment → Job Completion → Invoice → Job Margin`",
+          "",
+          "### Authentication",
+          "All `/api/*` routes require a JWT **except** `POST /api/auth/login`.",
+          "1. `POST /api/auth/login` with a demo account to get a token.",
+          "2. Click **Authorize** (top right) and paste the token.",
+          "",
+          "Demo logins (password `demo1234`): `admin@`, `manager@`, `supervisor@`, `dispatch@`, `tech@maintenanceos.com.au`. Roles are enforced: deletes & destructive/admin actions require Admin/Manager.",
+          "",
+          "### Conventions",
+          "- List endpoints support `q` (search), `limit`, `offset`; total count is returned in the `X-Total-Count` header.",
+          "- Errors use a consistent shape: `{ \"error\": string, \"details\"?: any }` (see the `ErrorResponse` schema). Common codes: `400` validation, `401` unauthenticated, `403` forbidden (role), `404` not found, `409` conflict (e.g. delete with dependents), `429` rate-limited.",
+          "- Money is AUD; GST is configurable in Settings (default 10%). Totals are always computed server-side.",
+        ].join("\n"),
+        contact: { name: "MaintenanceOS", url: "https://maintenanceos.fly.dev" },
       },
+      servers: [
+        { url: "https://maintenanceos.fly.dev", description: "Production (Fly.io demo)" },
+        { url: "http://localhost:4000", description: "Local development" },
+      ],
       components: {
         securitySchemes: {
-          bearerAuth: { type: "http", scheme: "bearer", bearerFormat: "JWT" },
+          bearerAuth: {
+            type: "http",
+            scheme: "bearer",
+            bearerFormat: "JWT",
+            description:
+              "Paste the `token` from `POST /api/auth/login` (no 'Bearer ' prefix needed here).",
+          },
+        },
+        schemas: {
+          ErrorResponse: {
+            type: "object",
+            description: "Standard error envelope returned by every endpoint on failure.",
+            properties: {
+              error: { type: "string", example: "Validation failed" },
+              details: {
+                description:
+                  "Optional extra context (e.g. Zod field errors for 400s).",
+                nullable: true,
+              },
+            },
+            required: ["error"],
+          },
         },
       },
       security: [{ bearerAuth: [] }],
       tags: [
-        { name: "Auth" },
-        { name: "Dashboard" },
-        { name: "Accounts" },
-        { name: "Sites" },
-        { name: "Employees" },
-        { name: "Skills" },
-        { name: "Work Orders" },
-        { name: "Quotes" },
-        { name: "Inventory" },
-        { name: "Suppliers" },
-        { name: "Purchase Orders" },
-        { name: "Invoices" },
-        { name: "Vehicles" },
-        { name: "Assets" },
-        { name: "Reports" },
-        { name: "Settings" },
-        { name: "Audit" },
-        { name: "System" },
-        { name: "Attachments" },
-        { name: "Notifications" },
-        { name: "Recurring" },
+        { name: "Auth", description: "Log in and obtain a JWT; inspect the current user. Start here." },
+        { name: "Dashboard", description: "Aggregated operational KPIs for the home dashboard (open jobs, SLA breaches, revenue, margin, low stock, etc.)." },
+        { name: "Accounts", description: "Customers — real estate agencies, councils, schools, body corporates, aged-care, commercial, homeowners. List supports search & pagination." },
+        { name: "Sites", description: "Physical properties belonging to an account. Work orders are raised against a site." },
+        { name: "Employees", description: "Field & office staff: role, employment type, territory, hourly cost (drives job costing) and skills." },
+        { name: "Skills", description: "Skill/clearance catalogue and assignment to employees (e.g. White Card, Working at Heights, Aged-care clearance)." },
+        { name: "Work Orders", description: "The heart of the system. Lifecycle, scheduling, assignment, completion, status transitions (validated), timesheets and job costing." },
+        { name: "Quotes", description: "Priced quotes for a work order. Subtotal/GST/total computed server-side; approving a quote advances the work order." },
+        { name: "Inventory", description: "Items, locations (warehouse/van), stock levels and movements; low-stock against reorder points." },
+        { name: "Suppliers", description: "Vendors used for purchase orders." },
+        { name: "Purchase Orders", description: "Stock ordering and receiving (receipt updates inventory)." },
+        { name: "Invoices", description: "Billing generated from completed work / approved quotes; status, overdue tracking, PDF." },
+        { name: "Vehicles", description: "Fleet vehicles with service/registration due tracking." },
+        { name: "Assets", description: "Tools, trailers, machines and safety equipment, with assignment and service due." },
+        { name: "Reports", description: "Operational analytics: revenue & margin by month, SLA breaches, technician utilisation, margin leakage, low stock." },
+        { name: "Settings", description: "Company profile & finance config (GST rate, margin-risk threshold). Editing requires Admin/Manager." },
+        { name: "Audit", description: "Append-only log of significant actions (Admin/Manager)." },
+        { name: "System", description: "Demo controls: reset to seeded demo data, database backups (Admin/Manager)." },
+        { name: "Attachments", description: "Upload/download photos & documents against a work order (before/after, signed docs)." },
+        { name: "Notifications", description: "In-app operational notifications and read state." },
+        { name: "Recurring", description: "Contract/recurring maintenance plans that auto-generate work orders." },
       ],
     },
+    transform: jsonSchemaTransform,
   });
-  await app.register(swaggerUi, { routePrefix: "/docs" });
+  await app.register(swaggerUi, {
+    routePrefix: "/docs",
+    uiConfig: { docExpansion: "list", deepLinking: true, displayRequestDuration: true },
+  });
 
   app.get("/health", { schema: { hide: true } }, async () => ({
     status: "ok",
@@ -113,10 +172,32 @@ export async function buildApp(): Promise<FastifyInstance> {
         .status(error.statusCode)
         .send({ error: error.message, details: error.details });
     }
-    if (error instanceof ZodError) {
+    // Request validation failures from the Zod type provider (or any Zod
+    // thrown in a handler) → our standard { error, details } shape.
+    const zerr =
+      error instanceof ZodError
+        ? error
+        : ((error as { cause?: unknown }).cause instanceof ZodError
+            ? ((error as { cause: ZodError }).cause)
+            : null);
+    if (zerr) {
       return reply
         .status(400)
-        .send({ error: "Validation failed", details: error.flatten() });
+        .send({ error: "Validation failed", details: zerr.flatten() });
+    }
+    if (
+      (error as { code?: string }).code === "FST_ERR_VALIDATION" ||
+      Array.isArray((error as { validation?: unknown }).validation)
+    ) {
+      return reply.status(400).send({
+        error: "Validation failed",
+        details: (error as { validation?: unknown }).validation ?? error.message,
+      });
+    }
+    // Response serialization mismatch (a route's response schema is wrong).
+    if (error instanceof ResponseValidationError) {
+      app.log.error({ err: error }, "response serialization failed");
+      return reply.status(500).send({ error: "Internal server error" });
     }
     if ((error as { statusCode?: number }).statusCode === 429) {
       return reply.status(429).send({ error: "Too many requests" });

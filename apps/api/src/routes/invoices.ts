@@ -1,7 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { prisma } from "../prisma.js";
-import { parse } from "../lib/validate.js";
 import { notFound, badRequest } from "../lib/errors.js";
 import { nextInvoiceNumber } from "../lib/numbering.js";
 import { calcInvoiceTotals } from "../lib/costing.js";
@@ -19,9 +18,20 @@ const createSchema = z.object({
   dueInDays: z.number().int().positive().default(30),
 });
 
+const idParam = z.object({ id: z.string() });
+const workOrderParam = z.object({ workOrderId: z.string() });
+const listQuery = z.object({
+  status: z.string().optional(),
+  accountId: z.string().optional(),
+  q: z.string().optional(),
+  limit: z.coerce.number().int().positive().max(500).optional(),
+  offset: z.coerce.number().int().nonnegative().optional(),
+});
+const statusSchema = z.object({ status: z.enum(INVOICE_STATUSES) });
+
 export async function invoiceRoutes(app: FastifyInstance) {
-  app.get("/", { schema: { tags: ["Invoices"], summary: "List invoices (search/paginate)" } }, async (req, reply) => {
-    const { status, accountId, q, limit, offset } = req.query as Record<string, string | undefined>;
+  app.get("/", { schema: { tags: ["Invoices"], summary: "List invoices (search/paginate)", querystring: listQuery } }, async (req, reply) => {
+    const { status, accountId, q, limit, offset } = req.query as z.infer<typeof listQuery>;
     const where = {
       ...(status ? { status } : {}),
       ...(accountId ? { accountId } : {}),
@@ -39,8 +49,8 @@ export async function invoiceRoutes(app: FastifyInstance) {
       where,
       orderBy: { createdAt: "desc" },
       include: { account: true, workOrder: true },
-      ...(limit ? { take: Math.min(Number(limit), 500) } : {}),
-      ...(offset ? { skip: Number(offset) } : {}),
+      ...(limit ? { take: limit } : {}),
+      ...(offset ? { skip: offset } : {}),
     });
     const now = new Date();
     return invoices.map((i) => ({
@@ -52,8 +62,8 @@ export async function invoiceRoutes(app: FastifyInstance) {
     }));
   });
 
-  app.get("/:id", { schema: { tags: ["Invoices"], summary: "Get invoice" } }, async (req) => {
-    const { id } = req.params as { id: string };
+  app.get("/:id", { schema: { tags: ["Invoices"], summary: "Get invoice", params: idParam } }, async (req) => {
+    const { id } = req.params as z.infer<typeof idParam>;
     const invoice = await prisma.invoice.findUnique({
       where: { id },
       include: { account: true, workOrder: { include: { site: true } } },
@@ -62,8 +72,8 @@ export async function invoiceRoutes(app: FastifyInstance) {
     return invoice;
   });
 
-  app.post("/", { schema: { tags: ["Invoices"], summary: "Create invoice" } }, async (req, reply) => {
-    const data = parse(createSchema, req.body);
+  app.post("/", { schema: { tags: ["Invoices"], summary: "Create invoice", body: createSchema } }, async (req, reply) => {
+    const data = req.body as z.infer<typeof createSchema>;
     const totals = calcInvoiceTotals(data.subtotal, await getGstRate());
     const issuedAt = new Date();
     const dueAt = new Date(issuedAt.getTime() + data.dueInDays * 86400000);
@@ -93,8 +103,8 @@ export async function invoiceRoutes(app: FastifyInstance) {
   });
 
   // Generate invoice from a completed work order (uses approved quote, else latest quote).
-  app.post("/from-work-order/:workOrderId", { schema: { tags: ["Invoices"], summary: "Invoice from work order" } }, async (req, reply) => {
-    const { workOrderId } = req.params as { workOrderId: string };
+  app.post("/from-work-order/:workOrderId", { schema: { tags: ["Invoices"], summary: "Generate invoice from a completed work order", params: workOrderParam } }, async (req, reply) => {
+    const { workOrderId } = req.params as z.infer<typeof workOrderParam>;
     const wo = await prisma.workOrder.findUnique({
       where: { id: workOrderId },
       include: { quotes: { orderBy: { createdAt: "desc" } } },
@@ -148,8 +158,8 @@ export async function invoiceRoutes(app: FastifyInstance) {
     return invoice;
   });
 
-  app.get("/:id/pdf", { schema: { tags: ["Invoices"], summary: "Download invoice PDF" } }, async (req, reply) => {
-    const { id } = req.params as { id: string };
+  app.get("/:id/pdf", { schema: { tags: ["Invoices"], summary: "Download invoice PDF", params: idParam } }, async (req, reply) => {
+    const { id } = req.params as z.infer<typeof idParam>;
     const invoice = await prisma.invoice.findUnique({
       where: { id },
       include: { account: true, workOrder: true },
@@ -164,9 +174,9 @@ export async function invoiceRoutes(app: FastifyInstance) {
     return reply.send(pdf);
   });
 
-  app.patch("/:id/status", { schema: { tags: ["Invoices"], summary: "Update invoice status" } }, async (req) => {
-    const { id } = req.params as { id: string };
-    const { status } = parse(z.object({ status: z.enum(INVOICE_STATUSES) }), req.body);
+  app.patch("/:id/status", { schema: { tags: ["Invoices"], summary: "Update invoice status", params: idParam, body: statusSchema } }, async (req) => {
+    const { id } = req.params as z.infer<typeof idParam>;
+    const { status } = req.body as z.infer<typeof statusSchema>;
     const existing = await prisma.invoice.findUnique({ where: { id } });
     if (!existing) throw notFound("Invoice");
     const updated = await prisma.invoice.update({

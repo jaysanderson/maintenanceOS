@@ -1,7 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { prisma } from "../prisma.js";
-import { parse } from "../lib/validate.js";
 import { notFound } from "../lib/errors.js";
 import { nextQuoteNumber } from "../lib/numbering.js";
 import { calcQuoteTotals } from "../lib/costing.js";
@@ -26,9 +25,20 @@ const createSchema = costFields.extend({
   notes: z.string().optional().nullable(),
 });
 
+const idParam = z.object({ id: z.string() });
+const listQuery = z.object({
+  status: z.string().optional(),
+  workOrderId: z.string().optional(),
+});
+const updateSchema = costFields.partial().extend({
+  validUntil: z.coerce.date().optional().nullable(),
+  notes: z.string().optional().nullable(),
+  status: z.enum(["DRAFT", "SENT", "APPROVED", "REJECTED", "EXPIRED"]).optional(),
+});
+
 export async function quoteRoutes(app: FastifyInstance) {
-  app.get("/", { schema: { tags: ["Quotes"], summary: "List quotes" } }, async (req) => {
-    const { status, workOrderId } = req.query as Record<string, string | undefined>;
+  app.get("/", { schema: { tags: ["Quotes"], summary: "List quotes (filter by status/work order)", querystring: listQuery } }, async (req) => {
+    const { status, workOrderId } = req.query as z.infer<typeof listQuery>;
     return prisma.quote.findMany({
       where: { ...(status ? { status } : {}), ...(workOrderId ? { workOrderId } : {}) },
       orderBy: { createdAt: "desc" },
@@ -36,8 +46,8 @@ export async function quoteRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get("/:id", { schema: { tags: ["Quotes"], summary: "Get quote" } }, async (req) => {
-    const { id } = req.params as { id: string };
+  app.get("/:id", { schema: { tags: ["Quotes"], summary: "Get quote", params: idParam } }, async (req) => {
+    const { id } = req.params as z.infer<typeof idParam>;
     const quote = await prisma.quote.findUnique({
       where: { id },
       include: { account: true, workOrder: { include: { site: true } } },
@@ -46,8 +56,8 @@ export async function quoteRoutes(app: FastifyInstance) {
     return quote;
   });
 
-  app.post("/", { schema: { tags: ["Quotes"], summary: "Create quote (totals computed server-side)" } }, async (req, reply) => {
-    const data = parse(createSchema, req.body);
+  app.post("/", { schema: { tags: ["Quotes"], summary: "Create quote (totals computed server-side)", body: createSchema } }, async (req, reply) => {
+    const data = req.body as z.infer<typeof createSchema>;
     const wo = await prisma.workOrder.findUnique({ where: { id: data.workOrderId } });
     if (!wo) throw notFound("Work order");
     const totals = calcQuoteTotals(data, await getGstRate());
@@ -83,15 +93,11 @@ export async function quoteRoutes(app: FastifyInstance) {
     return quote;
   });
 
-  app.put("/:id", { schema: { tags: ["Quotes"], summary: "Update quote" } }, async (req) => {
-    const { id } = req.params as { id: string };
+  app.put("/:id", { schema: { tags: ["Quotes"], summary: "Update quote (recomputes totals)", params: idParam, body: updateSchema } }, async (req) => {
+    const { id } = req.params as z.infer<typeof idParam>;
     const existing = await prisma.quote.findUnique({ where: { id } });
     if (!existing) throw notFound("Quote");
-    const data = parse(costFields.partial().extend({
-      validUntil: z.coerce.date().optional().nullable(),
-      notes: z.string().optional().nullable(),
-      status: z.enum(["DRAFT", "SENT", "APPROVED", "REJECTED", "EXPIRED"]).optional(),
-    }), req.body);
+    const data = req.body as z.infer<typeof updateSchema>;
     const merged = { ...existing, ...data };
     const totals = calcQuoteTotals(merged, await getGstRate());
     return prisma.quote.update({
@@ -101,8 +107,8 @@ export async function quoteRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get("/:id/pdf", { schema: { tags: ["Quotes"], summary: "Download quote PDF" } }, async (req, reply) => {
-    const { id } = req.params as { id: string };
+  app.get("/:id/pdf", { schema: { tags: ["Quotes"], summary: "Download quote PDF", params: idParam } }, async (req, reply) => {
+    const { id } = req.params as z.infer<typeof idParam>;
     const quote = await prisma.quote.findUnique({
       where: { id },
       include: { account: true, workOrder: true },
@@ -117,8 +123,8 @@ export async function quoteRoutes(app: FastifyInstance) {
     return reply.send(pdf);
   });
 
-  app.post("/:id/approve", { schema: { tags: ["Quotes"], summary: "Approve quote → work order APPROVED" } }, async (req) => {
-    const { id } = req.params as { id: string };
+  app.post("/:id/approve", { schema: { tags: ["Quotes"], summary: "Approve quote → work order APPROVED", params: idParam } }, async (req) => {
+    const { id } = req.params as z.infer<typeof idParam>;
     const quote = await prisma.quote.findUnique({ where: { id } });
     if (!quote) throw notFound("Quote");
     const updated = await prisma.quote.update({
@@ -139,8 +145,8 @@ export async function quoteRoutes(app: FastifyInstance) {
     return updated;
   });
 
-  app.post("/:id/reject", { schema: { tags: ["Quotes"], summary: "Reject quote" } }, async (req) => {
-    const { id } = req.params as { id: string };
+  app.post("/:id/reject", { schema: { tags: ["Quotes"], summary: "Reject quote", params: idParam } }, async (req) => {
+    const { id } = req.params as z.infer<typeof idParam>;
     const quote = await prisma.quote.findUnique({ where: { id } });
     if (!quote) throw notFound("Quote");
     const rejected = await prisma.quote.update({

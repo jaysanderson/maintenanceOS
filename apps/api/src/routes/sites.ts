@@ -1,8 +1,12 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { prisma } from "../prisma.js";
-import { parse } from "../lib/validate.js";
 import { notFound } from "../lib/errors.js";
+
+const idParam = z.object({ id: z.string() });
+const listQuery = z.object({
+  accountId: z.string().optional(),
+});
 
 const upsertSchema = z.object({
   accountId: z.string().min(1),
@@ -19,8 +23,8 @@ const upsertSchema = z.object({
 });
 
 export async function siteRoutes(app: FastifyInstance) {
-  app.get("/", { schema: { tags: ["Sites"], summary: "List sites" } }, async (req) => {
-    const { accountId } = req.query as { accountId?: string };
+  app.get("/", { schema: { tags: ["Sites"], summary: "List sites (optionally by account)", querystring: listQuery } }, async (req) => {
+    const { accountId } = req.query as z.infer<typeof listQuery>;
     return prisma.site.findMany({
       where: accountId ? { accountId } : {},
       orderBy: { name: "asc" },
@@ -28,8 +32,8 @@ export async function siteRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get("/:id", { schema: { tags: ["Sites"], summary: "Get site" } }, async (req) => {
-    const { id } = req.params as { id: string };
+  app.get("/:id", { schema: { tags: ["Sites"], summary: "Get site with account & work orders", params: idParam } }, async (req) => {
+    const { id } = req.params as z.infer<typeof idParam>;
     const site = await prisma.site.findUnique({
       where: { id },
       include: {
@@ -41,22 +45,22 @@ export async function siteRoutes(app: FastifyInstance) {
     return site;
   });
 
-  app.post("/", { schema: { tags: ["Sites"], summary: "Create site" } }, async (req, reply) => {
-    const data = parse(upsertSchema, req.body);
+  app.post("/", { schema: { tags: ["Sites"], summary: "Create site", body: upsertSchema } }, async (req, reply) => {
+    const data = req.body as z.infer<typeof upsertSchema>;
     reply.status(201);
     return prisma.site.create({ data });
   });
 
-  app.put("/:id", { schema: { tags: ["Sites"], summary: "Update site" } }, async (req) => {
-    const { id } = req.params as { id: string };
-    const data = parse(upsertSchema.partial(), req.body);
+  app.put("/:id", { schema: { tags: ["Sites"], summary: "Update site", params: idParam, body: upsertSchema.partial() } }, async (req) => {
+    const { id } = req.params as z.infer<typeof idParam>;
+    const data = req.body as Partial<z.infer<typeof upsertSchema>>;
     const existing = await prisma.site.findUnique({ where: { id } });
     if (!existing) throw notFound("Site");
     return prisma.site.update({ where: { id }, data });
   });
 
-  app.delete("/:id", { schema: { tags: ["Sites"], summary: "Delete site" } }, async (req, reply) => {
-    const { id } = req.params as { id: string };
+  app.delete("/:id", { schema: { tags: ["Sites"], summary: "Delete site", params: idParam } }, async (req, reply) => {
+    const { id } = req.params as z.infer<typeof idParam>;
     const existing = await prisma.site.findUnique({ where: { id } });
     if (!existing) throw notFound("Site");
     await prisma.site.delete({ where: { id } });

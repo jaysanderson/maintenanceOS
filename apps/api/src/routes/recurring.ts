@@ -1,7 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { prisma } from "../prisma.js";
-import { parse } from "../lib/validate.js";
 import { notFound } from "../lib/errors.js";
 import { nextWorkOrderNumber } from "../lib/numbering.js";
 import { audit } from "../lib/audit.js";
@@ -20,6 +19,8 @@ const upsertSchema = z.object({
   active: z.boolean().optional(),
 });
 
+const idParam = z.object({ id: z.string() });
+
 export async function recurringRoutes(app: FastifyInstance) {
   app.get("/", { schema: { tags: ["Recurring"], summary: "List recurring plans" } }, async () =>
     prisma.recurringPlan.findMany({
@@ -28,8 +29,8 @@ export async function recurringRoutes(app: FastifyInstance) {
     })
   );
 
-  app.post("/", { schema: { tags: ["Recurring"], summary: "Create recurring plan" } }, async (req, reply) => {
-    const b = parse(upsertSchema, req.body);
+  app.post("/", { schema: { tags: ["Recurring"], summary: "Create recurring plan", body: upsertSchema } }, async (req, reply) => {
+    const b = req.body as z.infer<typeof upsertSchema>;
     const plan = await prisma.recurringPlan.create({
       data: {
         accountId: b.accountId,
@@ -48,11 +49,11 @@ export async function recurringRoutes(app: FastifyInstance) {
     return plan;
   });
 
-  app.put("/:id", { schema: { tags: ["Recurring"], summary: "Update recurring plan" } }, async (req) => {
-    const { id } = req.params as { id: string };
+  app.put("/:id", { schema: { tags: ["Recurring"], summary: "Update recurring plan", params: idParam, body: upsertSchema.partial() } }, async (req) => {
+    const { id } = req.params as z.infer<typeof idParam>;
     const existing = await prisma.recurringPlan.findUnique({ where: { id } });
     if (!existing) throw notFound("Recurring plan");
-    const b = parse(upsertSchema.partial(), req.body);
+    const b = req.body as Partial<z.infer<typeof upsertSchema>>;
     return prisma.recurringPlan.update({
       where: { id },
       data: b,
@@ -60,8 +61,8 @@ export async function recurringRoutes(app: FastifyInstance) {
     });
   });
 
-  app.delete("/:id", { schema: { tags: ["Recurring"], summary: "Delete recurring plan" } }, async (req, reply) => {
-    const { id } = req.params as { id: string };
+  app.delete("/:id", { schema: { tags: ["Recurring"], summary: "Delete recurring plan", params: idParam } }, async (req, reply) => {
+    const { id } = req.params as z.infer<typeof idParam>;
     await prisma.recurringPlan.deleteMany({ where: { id } });
     reply.status(204);
     return null;

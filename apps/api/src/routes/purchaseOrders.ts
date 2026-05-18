@@ -1,7 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { prisma } from "../prisma.js";
-import { parse } from "../lib/validate.js";
 import { notFound, badRequest } from "../lib/errors.js";
 import { nextPurchaseOrderNumber } from "../lib/numbering.js";
 import { round } from "../lib/costing.js";
@@ -19,14 +18,30 @@ const createSchema = z.object({
   lines: z.array(lineSchema).min(1),
 });
 
+const idParam = z.object({ id: z.string() });
+const listQuery = z.object({
+  status: z.string().optional(),
+});
+const updateSchema = z.object({
+  status: z.enum(["DRAFT", "SENT", "PART_RECEIVED", "RECEIVED", "CANCELLED"]).optional(),
+  expectedDate: z.coerce.date().optional().nullable(),
+  notes: z.string().optional().nullable(),
+});
+const receiveSchema = z.object({
+  toLocationId: z.string().min(1),
+  lines: z
+    .array(z.object({ lineId: z.string(), quantity: z.number().positive() }))
+    .optional(),
+});
+
 const poInclude = {
   supplier: true,
   lines: { include: { inventoryItem: true } },
 };
 
 export async function purchaseOrderRoutes(app: FastifyInstance) {
-  app.get("/", { schema: { tags: ["Purchase Orders"], summary: "List purchase orders" } }, async (req) => {
-    const { status } = req.query as { status?: string };
+  app.get("/", { schema: { tags: ["Purchase Orders"], summary: "List purchase orders (filter by status)", querystring: listQuery } }, async (req) => {
+    const { status } = req.query as z.infer<typeof listQuery>;
     return prisma.purchaseOrder.findMany({
       where: status ? { status } : {},
       orderBy: { createdAt: "desc" },
@@ -34,15 +49,15 @@ export async function purchaseOrderRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get("/:id", { schema: { tags: ["Purchase Orders"], summary: "Get purchase order" } }, async (req) => {
-    const { id } = req.params as { id: string };
+  app.get("/:id", { schema: { tags: ["Purchase Orders"], summary: "Get purchase order", params: idParam } }, async (req) => {
+    const { id } = req.params as z.infer<typeof idParam>;
     const po = await prisma.purchaseOrder.findUnique({ where: { id }, include: poInclude });
     if (!po) throw notFound("Purchase order");
     return po;
   });
 
-  app.post("/", { schema: { tags: ["Purchase Orders"], summary: "Create purchase order" } }, async (req, reply) => {
-    const data = parse(createSchema, req.body);
+  app.post("/", { schema: { tags: ["Purchase Orders"], summary: "Create purchase order", body: createSchema } }, async (req, reply) => {
+    const data = req.body as z.infer<typeof createSchema>;
     const supplier = await prisma.supplier.findUnique({ where: { id: data.supplierId } });
     if (!supplier) throw notFound("Supplier");
     const po = await prisma.purchaseOrder.create({
@@ -67,33 +82,18 @@ export async function purchaseOrderRoutes(app: FastifyInstance) {
     return po;
   });
 
-  app.put("/:id", { schema: { tags: ["Purchase Orders"], summary: "Update PO status/details" } }, async (req) => {
-    const { id } = req.params as { id: string };
+  app.put("/:id", { schema: { tags: ["Purchase Orders"], summary: "Update PO status/details", params: idParam, body: updateSchema } }, async (req) => {
+    const { id } = req.params as z.infer<typeof idParam>;
     const existing = await prisma.purchaseOrder.findUnique({ where: { id } });
     if (!existing) throw notFound("Purchase order");
-    const data = parse(
-      z.object({
-        status: z.enum(["DRAFT", "SENT", "PART_RECEIVED", "RECEIVED", "CANCELLED"]).optional(),
-        expectedDate: z.coerce.date().optional().nullable(),
-        notes: z.string().optional().nullable(),
-      }),
-      req.body
-    );
+    const data = req.body as z.infer<typeof updateSchema>;
     return prisma.purchaseOrder.update({ where: { id }, data, include: poInclude });
   });
 
   // Receive stock into a location → creates PURCHASE_RECEIPT movements.
-  app.post("/:id/receive", { schema: { tags: ["Purchase Orders"], summary: "Receive PO stock into a location" } }, async (req) => {
-    const { id } = req.params as { id: string };
-    const { toLocationId, lines } = parse(
-      z.object({
-        toLocationId: z.string().min(1),
-        lines: z
-          .array(z.object({ lineId: z.string(), quantity: z.number().positive() }))
-          .optional(),
-      }),
-      req.body
-    );
+  app.post("/:id/receive", { schema: { tags: ["Purchase Orders"], summary: "Receive PO stock into a location", params: idParam, body: receiveSchema } }, async (req) => {
+    const { id } = req.params as z.infer<typeof idParam>;
+    const { toLocationId, lines } = req.body as z.infer<typeof receiveSchema>;
     const po = await prisma.purchaseOrder.findUnique({ where: { id }, include: { lines: true } });
     if (!po) throw notFound("Purchase order");
     const location = await prisma.inventoryLocation.findUnique({ where: { id: toLocationId } });

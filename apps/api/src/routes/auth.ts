@@ -1,20 +1,21 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { prisma } from "../prisma.js";
-import { parse } from "../lib/validate.js";
 import { ApiError } from "../lib/errors.js";
 import { verifyPassword, type Role } from "../lib/auth.js";
 import { audit } from "../lib/audit.js";
 
+const loginSchema = z.object({
+  email: z.string().email(),
+  password: z.string().min(1),
+});
+
 export async function authRoutes(app: FastifyInstance) {
   app.post(
     "/login",
-    { schema: { tags: ["Auth"], summary: "Log in, returns a JWT" } },
+    { schema: { tags: ["Auth"], summary: "Log in with email & password, returns a JWT", body: loginSchema } },
     async (req) => {
-      const { email, password } = parse(
-        z.object({ email: z.string().email(), password: z.string().min(1) }),
-        req.body
-      );
+      const { email, password } = req.body as z.infer<typeof loginSchema>;
       const user = await prisma.user.findUnique({
         where: { email: email.toLowerCase() },
       });
