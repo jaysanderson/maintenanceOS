@@ -1,0 +1,13 @@
+node_modules
+**/node_modules
+**/dist
+apps/api/prisma/*.db
+apps/api/prisma/*.db-journal
+apps/api/uploads
+apps/api/backups
+apps/api/.arag-out
+.git
+.env
+**/.env
+*.log
+.DS_Store
