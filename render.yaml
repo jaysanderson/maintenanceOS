@@ -1,0 +1,26 @@
+# Render Blueprint — single free Web Service serving the API + built SPA.
+# SQLite is created & seeded at build time (disposable demo data; resets on
+# each deploy). Upgrade path (Postgres + Disk) is in DEPLOYMENT.md.
+services:
+  - type: web
+    name: maintenanceos
+    runtime: node
+    plan: free
+    branch: main
+    healthCheckPath: /health
+    buildCommand: >-
+      npm install &&
+      npm run db:generate --workspace apps/api &&
+      npm run build &&
+      npm run db:push --workspace apps/api &&
+      npm run db:seed --workspace apps/api
+    startCommand: npm run start --workspace apps/api
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        value: file:./dev.db
+      - key: JWT_SECRET
+        generateValue: true

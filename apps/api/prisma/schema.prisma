@@ -1,0 +1,420 @@
+// MaintenanceOS data model.
+// SQLite has no native enums/arrays — enum-like fields are strings validated by Zod
+// at the API boundary; list relations use explicit join tables.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Account {
+  id                 String   @id @default(cuid())
+  name               String
+  type               String // HOMEOWNER, REAL_ESTATE, BODY_CORPORATE, SCHOOL, AGED_CARE, COUNCIL, COMMERCIAL
+  primaryContactName String?
+  email              String?
+  phone              String?
+  billingAddress     String?
+  accountManager     String?
+  paymentTerms       String? // e.g. "NET_30"
+  notes              String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  sites          Site[]
+  workOrders     WorkOrder[]
+  quotes         Quote[]
+  invoices       Invoice[]
+  recurringPlans RecurringPlan[]
+}
+
+model Site {
+  id                  String   @id @default(cuid())
+  accountId           String
+  name                String
+  address             String
+  suburb              String
+  state               String
+  postcode            String
+  accessNotes         String?
+  siteContactName     String?
+  siteContactPhone    String?
+  petsOnSite          Boolean  @default(false)
+  preferredVisitWindow String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  account        Account         @relation(fields: [accountId], references: [id])
+  workOrders     WorkOrder[]
+  recurringPlans RecurringPlan[]
+}
+
+model Employee {
+  id             String   @id @default(cuid())
+  firstName      String
+  lastName       String
+  role           String // TECHNICIAN, SENIOR_TECHNICIAN, DISPATCHER, SUPERVISOR, ADMIN, MANAGER
+  email          String?
+  phone          String?
+  hourlyCost     Float    @default(0)
+  employmentType String // FULL_TIME, PART_TIME, CASUAL, SUBCONTRACTOR
+  territory      String?
+  active         Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  skills           EmployeeSkill[]
+  workOrders       WorkOrder[]
+  vehicles         Vehicle[]
+  assets           Asset[]
+  timeEntries      TimeEntry[]
+}
+
+model Skill {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  category  String? // TRADE, COMPLIANCE, LICENCE
+  createdAt DateTime @default(now())
+
+  employees        EmployeeSkill[]
+  workOrderSkills  WorkOrderRequiredSkill[]
+}
+
+model EmployeeSkill {
+  id         String   @id @default(cuid())
+  employeeId String
+  skillId    String
+  createdAt  DateTime @default(now())
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  skill    Skill    @relation(fields: [skillId], references: [id], onDelete: Cascade)
+
+  @@unique([employeeId, skillId])
+}
+
+model WorkOrder {
+  id              String    @id @default(cuid())
+  workOrderNumber String    @unique
+  accountId       String
+  siteId          String
+  title           String
+  description     String?
+  jobType         String // REPAIR, MAINTENANCE, INSPECTION, EMERGENCY, QUOTE_ONLY, RECURRING_SERVICE
+  priority        String    @default("NORMAL") // LOW, NORMAL, HIGH, URGENT
+  status          String    @default("NEW") // NEW, TRIAGE, QUOTE_REQUIRED, AWAITING_APPROVAL, APPROVED, SCHEDULED, DISPATCHED, IN_PROGRESS, WAITING_ON_PARTS, COMPLETED, INVOICED, CLOSED, CANCELLED
+  assignedEmployeeId String?
+  scheduledStart  DateTime?
+  scheduledEnd    DateTime?
+  slaDueAt        DateTime?
+  estimatedHours  Float?
+  actualHours     Float?
+  customerNotes   String?
+  internalNotes   String?
+  completionNotes String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  account          Account                  @relation(fields: [accountId], references: [id])
+  site             Site                     @relation(fields: [siteId], references: [id])
+  assignedEmployee Employee?                @relation(fields: [assignedEmployeeId], references: [id])
+  requiredSkills   WorkOrderRequiredSkill[]
+  quotes           Quote[]
+  invoices         Invoice[]
+  stockMovements   StockMovement[]
+  attachments      Attachment[]
+  timeEntries      TimeEntry[]
+}
+
+model WorkOrderRequiredSkill {
+  id          String @id @default(cuid())
+  workOrderId String
+  skillId     String
+
+  workOrder WorkOrder @relation(fields: [workOrderId], references: [id], onDelete: Cascade)
+  skill     Skill     @relation(fields: [skillId], references: [id], onDelete: Cascade)
+
+  @@unique([workOrderId, skillId])
+}
+
+model Quote {
+  id               String   @id @default(cuid())
+  quoteNumber      String   @unique
+  workOrderId      String
+  accountId        String
+  status           String   @default("DRAFT") // DRAFT, SENT, APPROVED, REJECTED, EXPIRED
+  labourHours      Float    @default(0)
+  labourRate       Float    @default(0)
+  materialCost     Float    @default(0)
+  subcontractorCost Float   @default(0)
+  equipmentCost    Float    @default(0)
+  travelCost       Float    @default(0)
+  disposalCost     Float    @default(0)
+  marginPercent    Float    @default(0)
+  subtotal         Float    @default(0)
+  gst              Float    @default(0)
+  total            Float    @default(0)
+  validUntil       DateTime?
+  notes            String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  workOrder WorkOrder @relation(fields: [workOrderId], references: [id])
+  account   Account   @relation(fields: [accountId], references: [id])
+}
+
+model InventoryItem {
+  id           String   @id @default(cuid())
+  sku          String   @unique
+  name         String
+  category     String?
+  unit         String   @default("EA")
+  unitCost     Float    @default(0)
+  sellPrice    Float    @default(0)
+  reorderPoint Float    @default(0)
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  movements        StockMovement[]
+  purchaseOrderLines PurchaseOrderLine[]
+}
+
+model InventoryLocation {
+  id        String   @id @default(cuid())
+  name      String
+  type      String // WAREHOUSE, VAN, TRAILER, SITE, DAMAGED
+  createdAt DateTime @default(now())
+
+  movementsFrom StockMovement[] @relation("FromLocation")
+  movementsTo   StockMovement[] @relation("ToLocation")
+}
+
+model StockMovement {
+  id              String   @id @default(cuid())
+  inventoryItemId String
+  fromLocationId  String?
+  toLocationId    String?
+  workOrderId     String?
+  quantity        Float
+  movementType    String // PURCHASE_RECEIPT, TRANSFER, CONSUMED_ON_JOB, ADJUSTMENT, RETURN
+  notes           String?
+  createdAt       DateTime @default(now())
+
+  inventoryItem InventoryItem      @relation(fields: [inventoryItemId], references: [id])
+  fromLocation  InventoryLocation? @relation("FromLocation", fields: [fromLocationId], references: [id])
+  toLocation    InventoryLocation? @relation("ToLocation", fields: [toLocationId], references: [id])
+  workOrder     WorkOrder?         @relation(fields: [workOrderId], references: [id])
+}
+
+model Supplier {
+  id           String   @id @default(cuid())
+  name         String
+  contactName  String?
+  email        String?
+  phone        String?
+  address      String?
+  paymentTerms String?
+  notes        String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  purchaseOrders PurchaseOrder[]
+}
+
+model PurchaseOrder {
+  id           String   @id @default(cuid())
+  poNumber     String   @unique
+  supplierId   String
+  status       String   @default("DRAFT") // DRAFT, SENT, PART_RECEIVED, RECEIVED, CANCELLED
+  expectedDate DateTime?
+  notes        String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  supplier Supplier            @relation(fields: [supplierId], references: [id])
+  lines    PurchaseOrderLine[]
+}
+
+model PurchaseOrderLine {
+  id              String @id @default(cuid())
+  purchaseOrderId String
+  inventoryItemId String
+  quantity        Float
+  unitCost        Float
+  total           Float
+  receivedQty     Float  @default(0)
+
+  purchaseOrder PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  inventoryItem InventoryItem @relation(fields: [inventoryItemId], references: [id])
+}
+
+model Invoice {
+  id            String   @id @default(cuid())
+  invoiceNumber String   @unique
+  workOrderId   String?
+  accountId     String
+  status        String   @default("DRAFT") // DRAFT, SENT, PAID, OVERDUE, VOID
+  subtotal      Float    @default(0)
+  gst           Float    @default(0)
+  total         Float    @default(0)
+  issuedAt      DateTime?
+  dueAt         DateTime?
+  paidAt        DateTime?
+  notes         String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  workOrder WorkOrder? @relation(fields: [workOrderId], references: [id])
+  account   Account    @relation(fields: [accountId], references: [id])
+}
+
+model Vehicle {
+  id                 String   @id @default(cuid())
+  name               String
+  registration       String
+  assignedEmployeeId String?
+  make               String?
+  model              String?
+  year               Int?
+  odometer           Int      @default(0)
+  serviceDueAt       DateTime?
+  registrationDueAt  DateTime?
+  active             Boolean  @default(true)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  assignedEmployee Employee? @relation(fields: [assignedEmployeeId], references: [id])
+  assets           Asset[]
+}
+
+model Asset {
+  id                 String   @id @default(cuid())
+  name               String
+  assetType          String // TOOL, TRAILER, MACHINE, SAFETY_EQUIPMENT
+  serialNumber       String?
+  assignedEmployeeId String?
+  assignedVehicleId  String?
+  status             String   @default("AVAILABLE") // AVAILABLE, ASSIGNED, UNDER_REPAIR, RETIRED
+  serviceDueAt       DateTime?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  assignedEmployee Employee? @relation(fields: [assignedEmployeeId], references: [id])
+  assignedVehicle  Vehicle?  @relation(fields: [assignedVehicleId], references: [id])
+}
+
+// Application login accounts. Distinct from Employee (HR record); a User may
+// optionally be linked to an Employee.
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String
+  passwordHash String
+  role         String // ADMIN, MANAGER, SUPERVISOR, DISPATCHER, TECHNICIAN
+  active       Boolean  @default(true)
+  employeeId   String?
+  lastLoginAt  DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  auditLogs AuditLog[]
+}
+
+// Append-only record of significant actions for accountability/disputes.
+model AuditLog {
+  id        String   @id @default(cuid())
+  at        DateTime @default(now())
+  userId    String?
+  userEmail String?
+  action    String // e.g. WORK_ORDER_STATUS, QUOTE_APPROVED, DEMO_RESET, LOGIN
+  entity    String? // e.g. WorkOrder
+  entityId  String?
+  summary   String
+  meta      String? // JSON blob
+
+  user User? @relation(fields: [userId], references: [id])
+}
+
+// Generic runtime key/value settings (company profile, GST rate, SLA targets).
+model AppSetting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+}
+
+// File/photo attachments on work orders (before/after photos, signed docs).
+model Attachment {
+  id             String   @id @default(cuid())
+  workOrderId    String
+  filename       String
+  storedName     String // name on disk
+  mimeType       String
+  size           Int
+  kind           String   @default("DOCUMENT") // PHOTO, DOCUMENT, SIGNATURE
+  uploadedByEmail String?
+  createdAt      DateTime @default(now())
+
+  workOrder WorkOrder @relation(fields: [workOrderId], references: [id], onDelete: Cascade)
+}
+
+// Technician time entries; feed actual labour cost in job costing.
+model TimeEntry {
+  id          String   @id @default(cuid())
+  workOrderId String
+  employeeId  String
+  date        DateTime @default(now())
+  hours       Float
+  notes       String?
+  billable    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  workOrder WorkOrder @relation(fields: [workOrderId], references: [id], onDelete: Cascade)
+  employee  Employee  @relation(fields: [employeeId], references: [id])
+}
+
+// Recurring/contract maintenance templates that generate work orders.
+model RecurringPlan {
+  id              String   @id @default(cuid())
+  accountId       String
+  siteId          String
+  title           String
+  description     String?
+  jobType         String   @default("RECURRING_SERVICE")
+  priority        String   @default("NORMAL")
+  intervalDays    Int
+  nextRunAt       DateTime
+  lastGeneratedAt DateTime?
+  active          Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  account Account @relation(fields: [accountId], references: [id])
+  site    Site    @relation(fields: [siteId], references: [id])
+}
+
+// In-app notifications for operational events.
+model Notification {
+  id        String   @id @default(cuid())
+  type      String // SLA_BREACH, INVOICE_OVERDUE, QUOTE_APPROVED, JOB_COMPLETED, RECURRING_GENERATED
+  message   String
+  entity    String?
+  entityId  String?
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now())
+}
+
+// Logged "email" outbox. A real SMTP transport can be plugged in later;
+// for the demo, messages are recorded here instead of sent.
+model EmailOutbox {
+  id        String   @id @default(cuid())
+  to        String
+  subject   String
+  body      String
+  status    String   @default("LOGGED") // LOGGED, SENT, FAILED
+  createdAt DateTime @default(now())
+  sentAt    DateTime?
+}

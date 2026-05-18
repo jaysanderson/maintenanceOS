@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm -v)",
+      "Bash(npx --version)",
+      "Bash(npm install *)",
+      "Bash(npx prisma *)",
+      "Bash(npx tsx *)",
+      "Bash(npm run *)",
+      "Bash(curl -s localhost:4000/health)",
+      "Bash(curl -s localhost:4000/api/dashboard/summary)",
+      "Bash(curl -s \"localhost:4000/api/work-orders?status=NEW\")",
+      "Bash(curl -s localhost:4000/api/accounts)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" localhost:5173/)",
+      "Bash(curl -s localhost:5173/api/accounts)",
+      "Bash(pkill -f \"vite\")",
+      "mcp__Claude_Preview__preview_start",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" localhost:4000/health)"
+    ]
+  }
+}
