@@ -552,10 +552,94 @@ export async function seedDatabase(prisma: PrismaClient) {
   }
   console.log(`Assets: 30`);
 
+  // --- Representative audit history (so the demo Audit Log isn't empty) ---
+  const adminU = await prisma.user.findFirst({ where: { role: "ADMIN" } });
+  const mgrU = await prisma.user.findFirst({ where: { role: "MANAGER" } });
+  const auditWOs = await prisma.workOrder.findMany({
+    where: { status: { in: ["COMPLETED", "INVOICED", "SCHEDULED"] } },
+    take: 6,
+    orderBy: { updatedAt: "desc" },
+  });
+  const auditQuotes = await prisma.quote.findMany({
+    where: { status: "APPROVED" },
+    take: 3,
+  });
+  const auditInvoices = await prisma.invoice.findMany({ take: 3 });
+  const aLog: {
+    at: Date;
+    userId: string | null;
+    userEmail: string | null;
+    action: string;
+    entity: string | null;
+    entityId: string | null;
+    summary: string;
+  }[] = [];
+  const who = (u: typeof adminU) =>
+    u ? { userId: u.id, userEmail: u.email } : { userId: null, userEmail: null };
+  let t = 0;
+  const ago = () => new Date(Date.now() - ++t * 3.6e6 - int(0, 3.4e6));
+  if (adminU)
+    aLog.push({
+      at: ago(),
+      ...who(adminU),
+      action: "LOGIN",
+      entity: null,
+      entityId: null,
+      summary: `${adminU.email} logged in`,
+    });
+  if (mgrU)
+    aLog.push({
+      at: ago(),
+      ...who(mgrU),
+      action: "LOGIN",
+      entity: null,
+      entityId: null,
+      summary: `${mgrU.email} logged in`,
+    });
+  for (const w of auditWOs)
+    aLog.push({
+      at: ago(),
+      ...who(adminU),
+      action: "WORK_ORDER_STATUS",
+      entity: "WorkOrder",
+      entityId: w.id,
+      summary: `${w.workOrderNumber}: status set to ${w.status}`,
+    });
+  for (const q of auditQuotes)
+    aLog.push({
+      at: ago(),
+      ...who(mgrU ?? adminU),
+      action: "QUOTE_APPROVED",
+      entity: "Quote",
+      entityId: q.id,
+      summary: `${q.quoteNumber} approved (${q.total})`,
+    });
+  for (const inv of auditInvoices)
+    aLog.push({
+      at: ago(),
+      ...who(adminU),
+      action: "INVOICE_CREATE",
+      entity: "Invoice",
+      entityId: inv.id,
+      summary: `${inv.invoiceNumber} created (${inv.total})`,
+    });
+  if (adminU)
+    aLog.push({
+      at: ago(),
+      ...who(adminU),
+      action: "SETTINGS_UPDATED",
+      entity: "AppSetting",
+      entityId: null,
+      summary: `${adminU.email} updated company/finance settings`,
+    });
+  if (aLog.length) await prisma.auditLog.createMany({ data: aLog });
+  console.log(`Audit entries: ${aLog.length}`);
+
   console.log("\nSeed complete.");
 
   return {
     users: await prisma.user.count(),
+    auditEntries: await prisma.auditLog.count(),
     accounts: await prisma.account.count(),
     sites: await prisma.site.count(),
     employees: await prisma.employee.count(),

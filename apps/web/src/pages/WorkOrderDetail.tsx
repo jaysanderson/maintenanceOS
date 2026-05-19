@@ -64,6 +64,10 @@ export default function WorkOrderDetail() {
   const [start, setStart] = useState("");
   const [end, setEnd] = useState("");
 
+  const terminal =
+    !!wo.data &&
+    ["COMPLETED", "INVOICED", "CLOSED", "CANCELLED"].includes(wo.data.status);
+
   return (
     <PageState loading={wo.isLoading} error={wo.error}>
       {wo.data && (
@@ -233,9 +237,16 @@ export default function WorkOrderDetail() {
             <div className="space-y-4">
               <Card className="space-y-3 p-5">
                 <h3 className="font-semibold">Dispatch</h3>
+                {terminal && (
+                  <p className="rounded-md bg-slate-100 px-3 py-2 text-xs text-slate-500">
+                    This work order is {wo.data.status} — dispatch, completion
+                    and billing actions are locked.
+                  </p>
+                )}
                 <Field label="Assigned Technician">
                   <select
                     className={inputCls}
+                    disabled={terminal}
                     value={wo.data.assignedEmployeeId ?? ""}
                     onChange={(e) => assign.mutate(e.target.value || null)}
                   >
@@ -270,7 +281,7 @@ export default function WorkOrderDetail() {
                 </div>
                 <Button
                   variant="secondary"
-                  disabled={!start || !end || schedule.isPending}
+                  disabled={!start || !end || schedule.isPending || terminal}
                   onClick={() =>
                     schedule.mutate({
                       scheduledStart: new Date(start).toISOString(),
@@ -291,7 +302,7 @@ export default function WorkOrderDetail() {
                   <textarea className={inputCls} rows={2} value={completionNotes} onChange={(e) => setCompletionNotes(e.target.value)} />
                 </Field>
                 <Button
-                  disabled={complete.isPending}
+                  disabled={complete.isPending || terminal}
                   onClick={() => complete.mutate({ actualHours, completionNotes })}
                 >
                   Mark Completed
@@ -302,7 +313,7 @@ export default function WorkOrderDetail() {
                 <h3 className="font-semibold">Billing</h3>
                 <Button
                   variant="secondary"
-                  disabled={invoice.isPending}
+                  disabled={invoice.isPending || wo.data.status !== "COMPLETED"}
                   onClick={() =>
                     invoice.mutate(undefined, {
                       onSuccess: () => nav("/invoices"),
@@ -311,6 +322,11 @@ export default function WorkOrderDetail() {
                 >
                   Generate Invoice from Work Order
                 </Button>
+                {wo.data.status !== "COMPLETED" && (
+                  <p className="text-xs text-slate-400">
+                    Available once the work order is COMPLETED.
+                  </p>
+                )}
                 {invoice.isError && (
                   <p className="text-sm text-red-600">
                     {(invoice.error as Error).message}

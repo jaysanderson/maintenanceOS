@@ -101,7 +101,7 @@ export default function Layout({ children }: { children: ReactNode }) {
   const nav = NAV.filter((n) => !n.adminOnly || isAdmin);
 
   return (
-    <div className="flex h-full">
+    <div className="flex h-screen overflow-hidden">
       <aside className="flex w-60 shrink-0 flex-col border-r border-slate-200 bg-white">
         <div className="flex items-center gap-2 border-b border-slate-200 px-5 py-4">
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand-600 text-sm font-bold text-white">
@@ -116,7 +116,7 @@ export default function Layout({ children }: { children: ReactNode }) {
             </div>
           </div>
         </div>
-        <nav className="flex-1 overflow-y-auto px-3 py-3">
+        <nav className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
           {nav.map((n) => (
             <NavLink
               key={n.to}
@@ -140,8 +140,8 @@ export default function Layout({ children }: { children: ReactNode }) {
         </div>
       </aside>
 
-      <div className="flex flex-1 flex-col overflow-hidden">
-        <header className="flex items-center justify-between border-b border-slate-200 bg-white px-6 py-4">
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+        <header className="flex shrink-0 items-center justify-between border-b border-slate-200 bg-white px-6 py-4">
           <h1 className="text-lg font-semibold">{title}</h1>
           <div className="flex items-center gap-4">
             <a
@@ -173,7 +173,7 @@ export default function Layout({ children }: { children: ReactNode }) {
             )}
           </div>
         </header>
-        <main className="flex-1 overflow-y-auto p-6">{children}</main>
+        <main className="min-h-0 flex-1 overflow-y-auto p-6">{children}</main>
       </div>
     </div>
   );

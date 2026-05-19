@@ -56,7 +56,12 @@ export default function Invoices() {
                   </span>
                 ),
               },
-              { header: "Status", cell: (i) => <Badge value={i.status} /> },
+              {
+                header: "Status",
+                cell: (i) => (
+                  <Badge value={i.overdue && i.status !== "PAID" ? "OVERDUE" : i.status} />
+                ),
+              },
               {
                 header: "Action",
                 cell: (i) => (
