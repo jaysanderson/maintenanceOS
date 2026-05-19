@@ -8,3 +8,5 @@ apps/api/prisma/migrations/
 apps/api/uploads/
 apps/api/backups/
 .DS_Store
+
+.claude/worktrees/
