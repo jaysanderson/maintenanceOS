@@ -27,6 +27,8 @@
     "@fastify/static": "^7.0.4",
     "@fastify/swagger": "^8.15.0",
     "@fastify/swagger-ui": "^4.1.0",
+    "@maintenanceos/mcp-core": "*",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@prisma/client": "^5.22.0",
     "bcryptjs": "^2.4.3",
     "fastify": "^4.28.1",

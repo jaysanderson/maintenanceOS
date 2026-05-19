@@ -5,17 +5,19 @@
   "description": "MaintenanceOS - API-first ERP for a property maintenance business",
   "workspaces": [
     "apps/api",
-    "apps/web"
+    "apps/web",
+    "apps/mcp",
+    "packages/mcp-core"
   ],
   "scripts": {
     "dev": "npm-run-all --parallel dev:api dev:web",
     "dev:api": "npm run dev --workspace apps/api",
     "dev:web": "npm run dev --workspace apps/web",
-    "build": "npm run build --workspace apps/api && npm run build --workspace apps/web",
+    "build": "npm run build --workspace packages/mcp-core && npm run build --workspace apps/api && npm run build --workspace apps/web && npm run build --workspace apps/mcp",
     "db:reset": "npm run db:reset --workspace apps/api",
     "db:seed": "npm run db:seed --workspace apps/api",
     "test": "npm run test --workspace apps/api",
-    "typecheck": "npm run typecheck --workspace apps/api && npm run typecheck --workspace apps/web"
+    "typecheck": "npm run typecheck --workspace packages/mcp-core && npm run typecheck --workspace apps/api && npm run typecheck --workspace apps/web && npm run typecheck --workspace apps/mcp"
   },
   "devDependencies": {
     "npm-run-all": "^4.1.5"

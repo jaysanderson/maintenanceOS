@@ -42,6 +42,7 @@ import { systemRoutes } from "./routes/system.js";
 import { attachmentRoutes } from "./routes/attachments.js";
 import { notificationRoutes } from "./routes/notifications.js";
 import { recurringRoutes } from "./routes/recurring.js";
+import { mcpPlugin } from "./mcp.js";
 
 export async function buildApp(): Promise<FastifyInstance> {
   const app = Fastify({
@@ -225,7 +226,8 @@ export async function buildApp(): Promise<FastifyInstance> {
     const isApi =
       path.startsWith("/api") ||
       path.startsWith("/docs") ||
-      path === "/health";
+      path === "/health" ||
+      path === "/mcp";
     if (serveSpa && !isApi && req.method === "GET") {
       return reply.type("text/html").sendFile("index.html");
     }
@@ -266,6 +268,12 @@ export async function buildApp(): Promise<FastifyInstance> {
   };
 
   await app.register(api, { prefix: "/api" });
+
+  // Hosted MCP transport — mounted OUTSIDE `/api` so it's exempt from the
+  // /api JWT hook (the MCP plugin reads its own `Authorization` header and
+  // forwards it on each tool call). Registered AFTER /api so app.swagger()
+  // sees every route when the tool catalogue is generated.
+  await app.register(mcpPlugin);
 
   return app;
 }

@@ -1,0 +1,20 @@
+{
+  "name": "@maintenanceos/mcp",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "bin": { "maintenanceos-mcp": "dist/server.js" },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@maintenanceos/mcp-core": "*",
+    "@modelcontextprotocol/sdk": "^1.29.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.5",
+    "typescript": "^5.6.3"
+  }
+}
