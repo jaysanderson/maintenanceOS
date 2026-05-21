@@ -17,7 +17,7 @@ import {
   agentAsk,
   type ErpDoc,
 } from "../lib/arag.js";
-import { generateBriefing, dispatchActions, draftQuote } from "../lib/aiFeatures.js";
+import { generateBriefing, dispatchActions, draftQuote, savePlaybook } from "../lib/aiFeatures.js";
 import { AragError } from "@maintenanceos/arag-client";
 
 const classification = z.object({ labelset: z.string(), label: z.string() });
@@ -190,6 +190,30 @@ export async function aiRoutes(app: FastifyInstance) {
         raw: playbook ? undefined : res.answer,
         citations: res.citations,
       };
+    }
+  );
+
+  // F2b — Save a generated playbook as a reusable template (into the KB).
+  app.post(
+    "/playbook/save",
+    {
+      schema: {
+        tags: ["AI"],
+        summary: "Save a generated playbook as a reusable template",
+        body: z.object({
+          jobDescription: z.string().min(3).max(300),
+          playbook: z.record(z.string(), z.unknown()),
+        }),
+      },
+    },
+    async (req) => {
+      requireKb();
+      const { jobDescription, playbook } = req.body as {
+        jobDescription: string;
+        playbook: Record<string, unknown>;
+      };
+      const r = await wrap(savePlaybook(jobDescription, playbook));
+      return { saved: true, slug: r.slug };
     }
   );
 

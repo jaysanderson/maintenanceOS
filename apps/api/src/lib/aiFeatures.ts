@@ -9,7 +9,53 @@
 import { prisma } from "../prisma.js";
 import { computeJobCosting, computeStockLevels } from "./costing.js";
 import { getMarginRiskThreshold } from "./config.js";
-import { predictChat } from "./arag.js";
+import { predictChat, upsertErpDoc } from "./arag.js";
+
+interface PlaybookShape {
+  title?: string;
+  estimatedHours?: number;
+  requiredSkills?: string[];
+  typicalMaterials?: string[];
+  steps?: string[];
+  safetyControls?: string[];
+}
+
+/**
+ * Save a generated playbook back into the KB as a reusable template
+ * (doctype=playbook), so it's searchable by the Knowledge Copilot and
+ * reusable across the team. Idempotent by slug.
+ */
+export async function savePlaybook(
+  jobDescription: string,
+  playbook: PlaybookShape
+): Promise<{ slug: string }> {
+  const slug =
+    "playbook-" +
+    jobDescription.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 60);
+  const title = `Playbook: ${playbook.title ?? jobDescription}`;
+  const body = [
+    `# ${title}`,
+    ``,
+    `- Estimated hours: ${playbook.estimatedHours ?? "—"}`,
+    `- Required skills: ${(playbook.requiredSkills ?? []).join(", ") || "—"}`,
+    `- Typical materials: ${(playbook.typicalMaterials ?? []).join(", ") || "—"}`,
+    ``,
+    `## Steps`,
+    ...(playbook.steps ?? []).map((s, i) => `${i + 1}. ${s}`),
+    ``,
+    `## Safety controls`,
+    ...(playbook.safetyControls ?? []).map((s) => `- ${s}`),
+  ].join("\n");
+  await upsertErpDoc({
+    slug,
+    title,
+    body,
+    path: "/playbooks",
+    labels: [["doctype", "playbook"]],
+    relations: [],
+  });
+  return { slug };
+}
 
 const OPEN = [
   "NEW", "TRIAGE", "QUOTE_REQUIRED", "AWAITING_APPROVAL", "APPROVED",
@@ -236,6 +282,22 @@ export async function draftQuote(workOrderId: string): Promise<{
 
   const marginThreshold = await getMarginRiskThreshold();
 
+  // Digest comparables into guidance so the model anchors on sensible
+  // central values rather than copying a single comparable's zeros or an
+  // outlier computed margin.
+  const median = (xs: number[]): number => {
+    const v = xs.filter((n) => n > 0).sort((a, b) => a - b);
+    if (!v.length) return 0;
+    const m = Math.floor(v.length / 2);
+    return v.length % 2 ? v[m] : Math.round((v[m - 1] + v[m]) / 2);
+  };
+  // Standard labour rate: median of non-zero comparable rates, else the
+  // company's typical field rate.
+  const STANDARD_LABOUR_RATE = 110;
+  const typicalLabourRate = median(comparables.map((c) => c.labourRate)) || STANDARD_LABOUR_RATE;
+  const typicalLabourHours = median(comparables.map((c) => c.labourHours)) || wo.estimatedHours || 2;
+  const typicalMaterialCost = median(comparables.map((c) => c.materialCost));
+
   const context = {
     workOrder: {
       number: wo.workOrderNumber, title: wo.title, jobType: wo.jobType,
@@ -244,24 +306,43 @@ export async function draftQuote(workOrderId: string): Promise<{
       requiredSkills: wo.requiredSkills.map((s) => s.skill.name),
       estimatedHours: wo.estimatedHours,
     },
+    guidance: {
+      standardLabourRate: STANDARD_LABOUR_RATE,
+      typicalLabourRate,
+      typicalLabourHours,
+      typicalMaterialCost,
+      minGrossMarginPercent: Math.round(marginThreshold * 100),
+    },
     comparableJobs: comparables,
-    minGrossMargin: Math.round(marginThreshold * 100),
   };
 
   const system =
-    "You are an estimator for a property-maintenance company. Draft a quote for the given work order, anchored " +
-    "in the comparable historical jobs. Return ONLY a JSON object: " +
+    "You are an estimator for a property-maintenance company. Draft a realistic quote for the work order, " +
+    "anchored in the comparable jobs and the provided guidance. Return ONLY a JSON object: " +
     '{ "labourHours": number, "labourRate": number, "materialCost": number, "subcontractorCost": number, ' +
     '"equipmentCost": number, "travelCost": number, "disposalCost": number, "marginPercent": number, ' +
-    '"reasoning": string }. Base labour hours, rate and materials on the comparables. Keep marginPercent at or ' +
-    "above minGrossMargin. The server computes subtotal/GST/total — do not include them. Use only the provided data.";
+    '"reasoning": string }. RULES: ' +
+    "labourRate MUST be non-zero — use guidance.typicalLabourRate (never 0). " +
+    "labourHours should reflect the work order's estimatedHours or guidance.typicalLabourHours. " +
+    "materialCost should be a realistic estimate for the described work (use guidance.typicalMaterialCost as a " +
+    "starting point; only use 0 if the job genuinely needs no materials). " +
+    "marginPercent must be a sensible ROUND figure (e.g. 20, 25 or 30), at least guidance.minGrossMarginPercent — " +
+    "do NOT copy a comparable job's computed margin. " +
+    "The server computes subtotal/GST/total — do not include them. Use only the provided data.";
 
   const raw = await predictChat(
     "Draft the quote.",
     [system, `DATA:\n${JSON.stringify(context)}`],
     { systemPrompt: system }
   );
-  const draft = extractJson(raw);
+  const draft = extractJson(raw) as Record<string, number> | null;
+  // Safety net: never surface a zero/blank labour rate even if the model slips.
+  if (draft && (!draft.labourRate || draft.labourRate <= 0)) draft.labourRate = typicalLabourRate;
+  if (draft && (!draft.labourHours || draft.labourHours <= 0)) draft.labourHours = typicalLabourHours;
+  if (draft && (!draft.marginPercent || draft.marginPercent <= 0)) {
+    draft.marginPercent = Math.max(25, Math.round(marginThreshold * 100));
+  }
+
   return {
     draft: draft ?? null,
     comparables: comparables.map((c) => ({
