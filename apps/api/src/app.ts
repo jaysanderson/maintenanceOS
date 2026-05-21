@@ -42,6 +42,7 @@ import { systemRoutes } from "./routes/system.js";
 import { attachmentRoutes } from "./routes/attachments.js";
 import { notificationRoutes } from "./routes/notifications.js";
 import { recurringRoutes } from "./routes/recurring.js";
+import { aiRoutes } from "./routes/ai.js";
 import { mcpPlugin } from "./mcp.js";
 
 export async function buildApp(): Promise<FastifyInstance> {
@@ -153,6 +154,7 @@ export async function buildApp(): Promise<FastifyInstance> {
         { name: "Attachments", description: "Upload/download photos & documents against a work order (before/after, signed docs)." },
         { name: "Notifications", description: "In-app operational notifications and read state." },
         { name: "Recurring", description: "Contract/recurring maintenance plans that auto-generate work orders." },
+        { name: "AI", description: "Progress Agentic RAG features: grounded Knowledge Copilot Q&A, search, and agent-backed workflows." },
       ],
     },
     transform: jsonSchemaTransform,
@@ -265,6 +267,7 @@ export async function buildApp(): Promise<FastifyInstance> {
     await instance.register(attachmentRoutes);
     await instance.register(notificationRoutes, { prefix: "/notifications" });
     await instance.register(recurringRoutes, { prefix: "/recurring" });
+    await instance.register(aiRoutes, { prefix: "/ai" });
   };
 
   await app.register(api, { prefix: "/api" });

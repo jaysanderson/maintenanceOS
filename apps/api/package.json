@@ -16,6 +16,9 @@
     "db:push": "prisma db push --skip-generate",
     "db:seed": "tsx prisma/seed.ts",
     "db:reset": "rm -f prisma/dev.db && prisma db push --skip-generate && prisma generate && tsx prisma/seed.ts",
+    "arag:sync": "node --env-file-if-exists=.env --import tsx scripts/arag-sync.ts",
+    "arag:enrich": "node --env-file-if-exists=.env --import tsx scripts/arag-enrich.ts",
+    "arag:provision-agent": "node --env-file-if-exists=.env --import tsx scripts/arag-provision-agent.ts",
     "test": "npm run build && vitest run"
   },
   "dependencies": {
@@ -27,6 +30,7 @@
     "@fastify/static": "^7.0.4",
     "@fastify/swagger": "^8.15.0",
     "@fastify/swagger-ui": "^4.1.0",
+    "@maintenanceos/arag-client": "*",
     "@maintenanceos/mcp-core": "*",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@prisma/client": "^5.22.0",
