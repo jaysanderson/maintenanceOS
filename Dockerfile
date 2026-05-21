@@ -25,12 +25,18 @@ COPY . .
 ENV DATABASE_URL="file:./dev.db"
 
 # Web SPA — external repo. Public, so no auth needed. Override either of
-# these build args to point at a fork or pin to a specific commit/tag.
+# these build args to point at a fork or pin to a branch/tag.
 ARG WEB_REPO_URL=https://github.com/jaysanderson/maintenanceOS-web.git
 ARG WEB_REF=main
+# Cache-bust: when ONLY the web repo changed (this repo unchanged), Docker
+# would otherwise reuse the cached clone layer and ship a stale SPA. Pass a
+# changing value to force a fresh clone of WEB_REF's latest commit:
+#   fly deploy --build-arg WEB_CACHE_BUST=$(date +%s)
+ARG WEB_CACHE_BUST=0
 
 # Clone + build the web frontend, then drop dist/ where the API expects it.
-RUN git clone --depth=1 --branch "${WEB_REF}" "${WEB_REPO_URL}" /tmp/web \
+RUN echo "web build (ref=${WEB_REF}, bust=${WEB_CACHE_BUST})" \
+ && git clone --depth=1 --branch "${WEB_REF}" "${WEB_REPO_URL}" /tmp/web \
  && (cd /tmp/web && npm install && npm run build) \
  && mkdir -p /app/apps/web \
  && mv /tmp/web/dist /app/apps/web/dist \

@@ -48,7 +48,13 @@ this repo. Lessons learned the hard way go here.
 
 - Production app: Fly machine in `syd`, app `maintenanceos`.
 - Deploy: `fly deploy --ha=false -a maintenanceos`.
-- Pin the bundled SPA: `fly deploy --build-arg WEB_REF=<sha-or-tag>`.
+- Pin the bundled SPA to a branch/tag: `fly deploy --build-arg WEB_REF=<branch-or-tag>`
+  (NOT a commit sha — `git clone --branch` rejects shas).
+- **Web-only change?** The Dockerfile clones the web repo in a layer below
+  the monorepo `COPY`, so a deploy where only `maintenanceOS-web` changed
+  reuses the cached clone and ships a **stale SPA**. Force a fresh clone:
+  `fly deploy --build-arg WEB_CACHE_BUST=$(date +%s)`. (A deploy that also
+  changes this repo busts the cache on its own.)
 - MCP endpoint: `https://maintenanceos.fly.dev/mcp` (Streamable HTTP,
   stateless; 81 tools auto-generated from `/docs/json`; tools/list +
   tools/call carry the same JWT as REST).
