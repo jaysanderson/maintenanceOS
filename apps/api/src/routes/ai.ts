@@ -39,6 +39,34 @@ const agentBody = z.object({
   args: z.record(z.string(), z.unknown()).optional(),
 });
 
+const JOB_TYPES = [
+  "REPAIR",
+  "MAINTENANCE",
+  "INSPECTION",
+  "EMERGENCY",
+  "RECURRING_SERVICE",
+] as const;
+
+const playbookBody = z.object({
+  /** Free-text job, e.g. "kitchen mixer tap replacement". */
+  jobDescription: z.string().min(3).max(300),
+  /** Optional: scope retrieval to a job type label. */
+  jobType: z.enum(JOB_TYPES).optional(),
+});
+
+/** Pull the first JSON object out of an LLM answer (handles ```json fences). */
+function extractJson(text: string): unknown | null {
+  const cleaned = text.replace(/```json/gi, "").replace(/```/g, "");
+  const start = cleaned.indexOf("{");
+  const end = cleaned.lastIndexOf("}");
+  if (start === -1 || end === -1 || end <= start) return null;
+  try {
+    return JSON.parse(cleaned.slice(start, end + 1));
+  } catch {
+    return null;
+  }
+}
+
 function requireKb(): void {
   if (!isConfigured()) {
     throw new ApiError(503, "AI is not configured (set ARAG_* in the environment)");
@@ -126,6 +154,41 @@ export async function aiRoutes(app: FastifyInstance) {
         throw new ApiError(502, `Agent error: ${r.error}`);
       }
       return { answer: r.answer, ...(r.error ? { warning: r.error } : {}) };
+    }
+  );
+
+  // F2 — Job Playbooks: a reusable, structured playbook for a job type,
+  // grounded in comparable historical work orders + safety/policy docs.
+  app.post(
+    "/playbook",
+    {
+      schema: {
+        tags: ["AI"],
+        summary: "Generate a structured Job Playbook (grounded in history + safety docs)",
+        body: playbookBody,
+      },
+    },
+    async (req) => {
+      requireKb();
+      const { jobDescription, jobType } = req.body as z.infer<typeof playbookBody>;
+      const query = [
+        `Create a standard job playbook for: "${jobDescription}".`,
+        `Base it on comparable past MaintenanceOS work orders and the relevant safety/policy documents.`,
+        `Return ONLY a JSON object with these keys:`,
+        `{"title": string, "requiredSkills": string[], "typicalMaterials": string[], "estimatedHours": number, "steps": string[], "safetyControls": string[]}.`,
+      ].join(" ");
+      const filters = jobType ? [{ labelset: "jobType", label: jobType }] : undefined;
+      const res = await wrap(ask({ query, filters }));
+      const playbook = extractJson(res.answer);
+      return {
+        jobDescription,
+        jobType: jobType ?? null,
+        playbook: playbook ?? null,
+        // Always include the raw answer so the UI degrades gracefully if the
+        // model didn't return clean JSON.
+        raw: playbook ? undefined : res.answer,
+        citations: res.citations,
+      };
     }
   );
 }
