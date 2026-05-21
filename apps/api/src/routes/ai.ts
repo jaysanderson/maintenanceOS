@@ -17,6 +17,7 @@ import {
   agentAsk,
   type ErpDoc,
 } from "../lib/arag.js";
+import { generateBriefing, dispatchActions, draftQuote } from "../lib/aiFeatures.js";
 import { AragError } from "@maintenanceos/arag-client";
 
 const classification = z.object({ labelset: z.string(), label: z.string() });
@@ -189,6 +190,54 @@ export async function aiRoutes(app: FastifyInstance) {
         raw: playbook ? undefined : res.answer,
         citations: res.citations,
       };
+    }
+  );
+
+  // F4 — Daily Operations Briefing (hybrid: live KPIs → ARAG narration).
+  app.get(
+    "/briefing",
+    { schema: { tags: ["AI"], summary: "Generate today's operations briefing" } },
+    async () => {
+      requireKb();
+      const r = await wrap(generateBriefing());
+      return { briefing: r.briefing, data: r.data };
+    }
+  );
+
+  // F5 — Dispatcher Next-Best-Action (hybrid: open jobs + techs → ranked actions).
+  app.post(
+    "/dispatch-actions",
+    {
+      schema: {
+        tags: ["AI"],
+        summary: "Rank next-best dispatch actions for the unassigned queue",
+        body: z.object({ territory: z.string().max(80).optional() }),
+      },
+    },
+    async (req) => {
+      requireKb();
+      const { territory } = req.body as { territory?: string };
+      const r = await wrap(dispatchActions(territory));
+      return { actions: r.actions, raw: r.raw, context: r.context };
+    }
+  );
+
+  // F3 — Site-Adaptive Quote Drafting (hybrid: WO + comparable costing → draft).
+  app.post(
+    "/draft-quote",
+    {
+      schema: {
+        tags: ["AI"],
+        summary: "Draft a quote for a work order, grounded in comparable jobs",
+        body: z.object({ workOrderId: z.string().min(1) }),
+      },
+    },
+    async (req) => {
+      requireKb();
+      const { workOrderId } = req.body as { workOrderId: string };
+      const r = await wrap(draftQuote(workOrderId));
+      if (!r) throw new ApiError(404, "Work order not found");
+      return r;
     }
   );
 }
