@@ -481,14 +481,31 @@ export class AragKbClient {
 
 // ── Retrieval Agent client (multi-source agent: KB + MCP drivers) ─────────
 //
-// Distinct base path (`/api/v1/agent/{id}`) and used by the agent-backed
-// features (F3/F4/F5). Sessions hold conversation context; Interact streams
-// SSE. The `headers` on Interact are forwarded to drivers — we pass the
-// signed-in user's MaintenanceOS JWT there so the mcp_http driver inherits
-// the user's RBAC.
+// IMPORTANT — verified against the live aws-eu-central-1-1 deployment:
+//   * The agent API is on the data-platform host (dp.progress.cloud), set
+//     via ARAG_AGENT_BASE_URL.
+//   * Interaction is SESSIONLESS via the literal `ephemeral` session id —
+//     `POST /agent/{id}/session/ephemeral` (proper sessions need a Memory
+//     KB this agent type lacks). Body streams NDJSON, not `data:`-prefixed.
+//   * The workflow has 4 stages: preprocess → CONTEXT (retrieval) →
+//     generation → postprocess. Retrieval only fires if a `context` step
+//     exists (module `ask` for KB drivers, `mcp` for MCP drivers).
+//   * Working generation module is `summarize` (the `generate` module
+//     errors server-side on this deployment); model `chatgpt-azure-4o-mini`.
+//   * `headers` on the interaction are forwarded to drivers (e.g. a
+//     MaintenanceOS JWT for an mcphttp driver).
 
 export interface AragAgentConfig extends AragConfig {
   agentId: string;
+}
+
+/** Parsed result of an agent interaction. */
+export interface AragAgentAnswer {
+  answer: string;
+  /** Any exception detail surfaced by a workflow step. */
+  error?: string;
+  /** Raw NDJSON event objects, for debugging / step inspection. */
+  events: Record<string, unknown>[];
 }
 
 export class AragAgentClient {
@@ -498,89 +515,125 @@ export class AragAgentClient {
   private readonly timeoutMs: number;
 
   constructor(config: AragAgentConfig) {
-    if (!config.baseUrl) throw new AragError('config', 'ARAG_BASE_URL is not configured');
+    if (!config.baseUrl) throw new AragError('config', 'ARAG agent baseUrl is not configured');
     if (!config.agentId) throw new AragError('config', 'ARAG agentId is required');
     this.baseUrl = config.baseUrl.replace(/\/+$/, '');
     this.apiKey = config.apiKey;
     this.agentId = config.agentId;
-    this.timeoutMs = config.timeoutMs ?? 60_000;
+    this.timeoutMs = config.timeoutMs ?? 90_000;
   }
 
   private agentPath(suffix: string): string {
     return `/api/v1/agent/${encodeURIComponent(this.agentId)}/${suffix}`;
   }
 
-  private async req(method: string, path: string, body?: unknown, extraHeaders?: Record<string, string>): Promise<Response> {
-    const res = await fetch(`${this.baseUrl}${path}`, {
-      method,
-      headers: {
-        authorization: `Bearer ${this.apiKey}`,
-        ...(body !== undefined ? { 'content-type': 'application/json' } : {}),
-        ...extraHeaders,
-      },
-      body: body !== undefined ? JSON.stringify(body) : undefined,
-    });
-    if (!res.ok && res.status !== 200) {
-      throw new AragError('http', `ARAG agent ${res.status} on ${path}`, res.status);
+  private async req(
+    method: string,
+    path: string,
+    body?: unknown,
+    extraHeaders?: Record<string, string>,
+  ): Promise<Response> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    try {
+      const res = await fetch(`${this.baseUrl}${path}`, {
+        method,
+        headers: {
+          authorization: `Bearer ${this.apiKey}`,
+          ...(body !== undefined ? { 'content-type': 'application/json' } : {}),
+          ...extraHeaders,
+        },
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+        signal: controller.signal,
+      });
+      if (!res.ok && res.status !== 200) {
+        const text = await res.text().catch(() => '');
+        throw new AragError('http', `ARAG agent ${res.status} on ${path}: ${text.slice(0, 200)}`, res.status);
+      }
+      return res;
+    } finally {
+      clearTimeout(timer);
     }
-    return res;
-  }
-
-  /** Create a conversation session; returns its uuid. */
-  async createSession(opts: { slug?: string; name?: string }): Promise<{ uuid: string }> {
-    const res = await this.req('POST', this.agentPath('sessions'), {
-      slug: opts.slug ?? `s-${Date.now()}`,
-      name: opts.name ?? 'MaintenanceOS session',
-      summary: '',
-      data: '',
-      format: 'PLAIN',
-    });
-    return (await res.json()) as { uuid: string };
   }
 
   /**
-   * Ask a question in a session. `forwardHeaders` are passed to drivers
-   * (e.g. the MaintenanceOS JWT for the mcp_http driver). Returns the raw
-   * SSE Response so callers can stream it straight through to the browser.
+   * Ask the agent a question via the sessionless `ephemeral` interaction.
+   * Returns the raw streaming Response — callers can pipe it straight to a
+   * browser, or use `interactAnswer` for an assembled answer.
    */
-  interact(
-    sessionId: string,
+  interactStream(
     question: string,
-    opts?: { args?: Record<string, unknown>; forwardHeaders?: Record<string, string> },
+    opts?: {
+      workflowId?: string;
+      args?: Record<string, unknown>;
+      /** Forwarded to drivers (e.g. a MaintenanceOS JWT for an mcphttp driver). */
+      forwardHeaders?: Record<string, string>;
+    },
   ): Promise<Response> {
+    const wf = opts?.workflowId ? `?workflow_id=${encodeURIComponent(opts.workflowId)}` : '';
     return this.req(
       'POST',
-      this.agentPath(`session/${encodeURIComponent(sessionId)}`),
+      this.agentPath(`session/ephemeral${wf}`),
       { question, headers: opts?.forwardHeaders ?? {}, arguments: opts?.args ?? {}, operation: 0 },
       { accept: 'text/event-stream' },
     );
   }
 
-  /** Driver CRUD (config-as-code provisioning). */
-  async listDrivers(): Promise<unknown> {
-    const res = await this.req('GET', this.agentPath('drivers'));
-    return res.json();
+  /** Ask the agent and assemble the final answer from the NDJSON stream. */
+  async interactAnswer(
+    question: string,
+    opts?: {
+      workflowId?: string;
+      args?: Record<string, unknown>;
+      forwardHeaders?: Record<string, string>;
+    },
+  ): Promise<AragAgentAnswer> {
+    const res = await this.interactStream(question, opts);
+    const text = await res.text();
+    const events: Record<string, unknown>[] = [];
+    let answer = '';
+    let error: string | undefined;
+    for (const line of text.split('\n')) {
+      const t = line.trim().replace(/^data:\s*/, '');
+      if (!t.startsWith('{')) continue;
+      let d: Record<string, unknown>;
+      try {
+        d = JSON.parse(t) as Record<string, unknown>;
+      } catch {
+        continue;
+      }
+      events.push(d);
+      const a = d.answer;
+      if (typeof a === 'string' && a && a !== 'Error in generation' && a !== 'Error in context') {
+        answer = a;
+      }
+      if (typeof d.generated_text === 'string' && d.generated_text) answer = d.generated_text;
+      const exc = d.exception as { detail?: string } | null | undefined;
+      if (exc && exc.detail) error = exc.detail;
+    }
+    return { answer, error, events };
   }
-  async addDriver(driver: Record<string, unknown>): Promise<unknown> {
-    const res = await this.req('POST', this.agentPath('drivers'), driver);
-    return res.json().catch(() => ({}));
+
+  // ── Config-as-code provisioning (each stage: GET list / POST create) ─────
+  private async getJson<T>(suffix: string): Promise<T> {
+    const res = await this.req('GET', this.agentPath(suffix));
+    return (await res.json()) as T;
   }
-  async addPreprocess(step: Record<string, unknown>): Promise<unknown> {
-    const res = await this.req('POST', this.agentPath('preprocess'), step);
-    return res.json().catch(() => ({}));
+  private async postJson(suffix: string, body: unknown): Promise<{ id?: string }> {
+    const res = await this.req('POST', this.agentPath(suffix), body);
+    return (await res.json().catch(() => ({}))) as { id?: string };
   }
-  async addGeneration(step: Record<string, unknown>): Promise<unknown> {
-    const res = await this.req('POST', this.agentPath('generation'), step);
-    return res.json().catch(() => ({}));
-  }
-  async addPostprocess(step: Record<string, unknown>): Promise<unknown> {
-    const res = await this.req('POST', this.agentPath('postprocess'), step);
-    return res.json().catch(() => ({}));
-  }
-  async setRules(rules: unknown[]): Promise<unknown> {
-    const res = await this.req('POST', this.agentPath('rules'), { rules });
-    return res.json().catch(() => ({}));
-  }
+
+  listDrivers(): Promise<unknown[]> { return this.getJson('drivers'); }
+  addDriver(driver: Record<string, unknown>): Promise<{ id?: string }> { return this.postJson('drivers', driver); }
+  listContext(): Promise<unknown[]> { return this.getJson('context'); }
+  addContext(step: Record<string, unknown>): Promise<{ id?: string }> { return this.postJson('context', step); }
+  listGeneration(): Promise<unknown[]> { return this.getJson('generation'); }
+  addGeneration(step: Record<string, unknown>): Promise<{ id?: string }> { return this.postJson('generation', step); }
+  listPreprocess(): Promise<unknown[]> { return this.getJson('preprocess'); }
+  addPreprocess(step: Record<string, unknown>): Promise<{ id?: string }> { return this.postJson('preprocess', step); }
+  setRules(rules: unknown[]): Promise<{ id?: string }> { return this.postJson('rules', { rules }); }
+  listWorkflows(): Promise<unknown[]> { return this.getJson('workflows'); }
 }
 
 // ── Env factories (MaintenanceOS single-KB + single-agent) ────────────────
@@ -611,8 +664,22 @@ export function aragAgentConfigured(): boolean {
   return Boolean(process.env.ARAG_BASE_URL && process.env.ARAG_AGENT_ID && process.env.ARAG_AGENT_KEY);
 }
 
-/** Build the Retrieval Agent client from environment. */
+/**
+ * Build the Retrieval Agent client from environment.
+ *
+ * The agent API lives on the data-platform host (`dp.progress.cloud`),
+ * NOT the NucliaDB host (`rag.progress.cloud`) the KB uses. Resolve it from
+ * ARAG_AGENT_BASE_URL if set, else derive it from ARAG_BASE_URL.
+ */
 export function aragAgentFromEnv(): AragAgentClient {
   const key = process.env.ARAG_AGENT_KEY || process.env.ARAG_API_KEY || '';
-  return new AragAgentClient({ ...baseConfig(key), agentId: process.env.ARAG_AGENT_ID ?? '' });
+  const baseUrl =
+    process.env.ARAG_AGENT_BASE_URL ||
+    (process.env.ARAG_BASE_URL ?? '').replace('.rag.progress.cloud', '.dp.progress.cloud');
+  return new AragAgentClient({
+    baseUrl,
+    apiKey: key,
+    agentId: process.env.ARAG_AGENT_ID ?? '',
+    timeoutMs: process.env.ARAG_TIMEOUT_MS ? Number(process.env.ARAG_TIMEOUT_MS) : undefined,
+  });
 }

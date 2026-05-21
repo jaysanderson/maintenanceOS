@@ -121,4 +121,22 @@ export function startDaTask(spec: AragDaTaskParams): Promise<{ ok: boolean }> {
   return kb().setupDaTask(spec);
 }
 
+/**
+ * Ask the Retrieval Agent (multi-source: KB + MCP drivers) and return the
+ * assembled answer. `forwardJwt` is passed through as the driver auth header
+ * so the MaintenanceOS MCP driver inherits the caller's RBAC.
+ */
+export async function agentAsk(
+  question: string,
+  opts?: { forwardJwt?: string; args?: Record<string, unknown> }
+): Promise<{ answer: string; error?: string }> {
+  const r = await agent().interactAnswer(question, {
+    args: opts?.args,
+    forwardHeaders: opts?.forwardJwt
+      ? { authorization: `Bearer ${opts.forwardJwt}` }
+      : undefined,
+  });
+  return { answer: r.answer, error: r.error };
+}
+
 export { kb as kbClient };
