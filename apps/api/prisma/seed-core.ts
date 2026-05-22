@@ -344,6 +344,100 @@ export async function seedDatabase(prisma: PrismaClient) {
     "Quarterly rental property maintenance", "School facilities maintenance inspection",
     "Replace broken window pane", "Re-key external locks", "Service roller door",
   ];
+  // Job-specific detail per title so the knowledge base has real, varied
+  // content to ground AI answers/playbooks (not a single placeholder).
+  const JOB_DETAILS: Record<string, { description: string; completion: string }> = {
+    "Repair leaking tap": {
+      description:
+        "Kitchen mixer tap dripping from the spout and base. Likely a perished washer or worn ceramic cartridge. Isolate water at the stop valve, replace the tap washer / mixer cartridge, reseat and test under pressure for leaks.",
+      completion:
+        "Isolated supply, replaced the mixer cartridge and inlet washers, resealed the base, tested hot and cold under pressure — no leaks. Materials: mixer cartridge, washers, plumber's tape.",
+    },
+    "Replace damaged door handle": {
+      description:
+        "Internal door lever handle loose and not latching. Replace the handle set and strike plate, align the latch, check operation.",
+      completion:
+        "Fitted new lever handle set and strike plate, realigned latch, lubricated mechanism — operates smoothly. Materials: handle set, screws.",
+    },
+    "Patch and paint wall damage": {
+      description:
+        "Plasterboard damage to internal wall (knock/impact). Cut back, patch with plasterboard/compound, sand, prime and repaint to match existing colour.",
+      completion:
+        "Patched plasterboard, sanded, primed and repainted two coats to match. Materials: plasterboard offcut, jointing compound, primer, paint.",
+    },
+    "Clean gutters": {
+      description:
+        "Gutters and downpipes blocked with leaf litter on a single-storey dwelling. Clear debris, flush downpipes, check for sagging and corrosion.",
+      completion:
+        "Cleared all gutters and downpipes, flushed and confirmed free flow, noted no corrosion. Used ladder per safe work method.",
+    },
+    "Pressure wash courtyard": {
+      description:
+        "Paved courtyard with moss and grime buildup. Pressure wash pavers and retaining wall, treat slippery areas.",
+      completion:
+        "Pressure washed pavers and wall, treated mossy sections, area left clean and non-slip.",
+    },
+    "Repair fence panel": {
+      description:
+        "Timber/colorbond fence panel damaged and leaning after wind. Re-secure or replace the panel and repair the post fixing.",
+      completion:
+        "Replaced the damaged panel, re-fixed the post bracket, checked line and tension. Materials: fence panel, post bracket, fasteners.",
+    },
+    "Replace flyscreen": {
+      description:
+        "Window flyscreen torn. Re-mesh or replace the screen frame to suit the window opening.",
+      completion:
+        "Re-meshed the flyscreen frame and refitted to the window — secure and flush. Materials: fibreglass mesh, spline.",
+    },
+    "Assemble storage shelving": {
+      description:
+        "Flat-pack storage shelving to assemble and anchor in a store room. Assemble per instructions and wall-anchor to prevent tip-over.",
+      completion:
+        "Assembled shelving units and anchored to wall studs per tip-over guidance. Materials: shelving kit, wall anchors.",
+    },
+    "Fix sticking internal door": {
+      description:
+        "Internal door binding against the frame, likely seasonal swelling or dropped hinge. Adjust hinges or plane the edge and re-finish.",
+      completion:
+        "Adjusted hinges and eased the binding edge, sealed bare timber — door swings freely.",
+    },
+    "Emergency make-safe after storm damage": {
+      description:
+        "Storm damage — water ingress and loose roofing/cladding presenting a hazard. Attend urgently, make the area safe, tarp/secure, document for insurance and follow-up works.",
+      completion:
+        "Made site safe, secured loose cladding, installed temporary tarp to stop water ingress, photographed damage for the claim. Follow-up repair quoted separately.",
+    },
+    "Quarterly rental property maintenance": {
+      description:
+        "Scheduled quarterly maintenance check across a rental property — smoke alarms, taps/seals, door hardware, minor repairs and a condition report.",
+      completion:
+        "Completed quarterly checks: tested smoke alarms, checked tap seals and door hardware, actioned minor repairs, condition report filed.",
+    },
+    "School facilities maintenance inspection": {
+      description:
+        "Routine facilities inspection across school buildings — playground hardware, fencing, doors, wet areas, safety items. Log defects and recommend remedial works.",
+      completion:
+        "Inspected facilities, logged defects (fencing, two door closers), recommended remedial works with priorities. Report issued.",
+    },
+    "Replace broken window pane": {
+      description:
+        "Cracked/broken window pane presenting a safety risk. Remove broken glass safely, measure and install replacement glazing, reseal.",
+      completion:
+        "Removed broken glazing safely, installed replacement pane, resealed and cleaned. Materials: glass pane, glazing seal.",
+    },
+    "Re-key external locks": {
+      description:
+        "External door locks to be re-keyed after tenancy change. Re-pin or replace cylinders, supply new keys, test all entry points.",
+      completion:
+        "Re-keyed external cylinders, tested all entry doors, supplied three keys per door to the property manager. Materials: pinning kit, blank keys.",
+    },
+    "Service roller door": {
+      description:
+        "Roller/garage door noisy and slow. Service the motor and tracks, lubricate, adjust tension and limits, test safety reverse.",
+      completion:
+        "Serviced roller door — lubricated tracks, adjusted spring tension and travel limits, tested auto-reverse. Operates quietly.",
+    },
+  };
   const jobTypes = ["REPAIR", "MAINTENANCE", "INSPECTION", "EMERGENCY", "QUOTE_ONLY", "RECURRING_SERVICE"];
   const priorities = ["LOW", "NORMAL", "NORMAL", "NORMAL", "HIGH", "URGENT"];
   const statuses = [
@@ -372,14 +466,15 @@ export async function seedDatabase(prisma: PrismaClient) {
       ["SCHEDULED", "DISPATCHED", "IN_PROGRESS", "COMPLETED", "INVOICED", "CLOSED"].includes(status)
         ? daysFromNow(int(-25, 10))
         : null;
+    const woTitle = pick(jobTitles);
 
     const wo = await prisma.workOrder.create({
       data: {
         workOrderNumber: `WO-${year}-${pad(i + 1)}`,
         accountId: site.accountId,
         siteId: site.id,
-        title: pick(jobTitles),
-        description: "Customer reported issue requiring attention. See site contact for access.",
+        title: woTitle,
+        description: JOB_DETAILS[woTitle]?.description ?? "Customer reported issue requiring attention. See site contact for access.",
         jobType: pick(jobTypes),
         priority,
         status,
@@ -391,7 +486,9 @@ export async function seedDatabase(prisma: PrismaClient) {
         actualHours: isDone ? estimatedHours + (rnd() < 0.4 ? int(1, 3) : 0) : null,
         customerNotes: rnd() < 0.3 ? "Please call before attending." : null,
         internalNotes: rnd() < 0.3 ? "Check van stock before dispatch." : null,
-        completionNotes: isDone ? "Work completed and site left clean. Customer notified." : null,
+        completionNotes: isDone
+          ? JOB_DETAILS[woTitle]?.completion ?? "Work completed and site left clean. Customer notified."
+          : null,
       },
     });
     // required skills
