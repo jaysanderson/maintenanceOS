@@ -15,9 +15,12 @@ import {
   ask,
   find,
   agentAsk,
+  isLowConfidenceAnswer,
+  LOW_CONFIDENCE_MESSAGE,
   type ErpDoc,
 } from "../lib/arag.js";
 import { generateBriefing, dispatchActions, draftQuote, savePlaybook } from "../lib/aiFeatures.js";
+import { getAiConfidenceThreshold } from "../lib/config.js";
 import { AragError } from "@maintenanceos/arag-client";
 
 const classification = z.object({ labelset: z.string(), label: z.string() });
@@ -106,8 +109,26 @@ export async function aiRoutes(app: FastifyInstance) {
     async (req) => {
       requireKb();
       const { query, filters } = req.body as z.infer<typeof askBody>;
+      const threshold = await getAiConfidenceThreshold();
       const res = await wrap(ask({ query, filters }));
-      return { answer: res.answer, citations: res.citations };
+      // Low confidence = ARAG's "not enough data" sentinel (primary) or a
+      // retrieval score below the configurable threshold (secondary).
+      const lowConfidence =
+        isLowConfidenceAnswer(res.answer) || res.confidence < threshold;
+      if (lowConfidence) {
+        return {
+          answer: LOW_CONFIDENCE_MESSAGE,
+          citations: [],
+          confidence: res.confidence,
+          lowConfidence: true,
+        };
+      }
+      return {
+        answer: res.answer,
+        citations: res.citations,
+        confidence: res.confidence,
+        lowConfidence: false,
+      };
     }
   );
 
@@ -172,19 +193,39 @@ export async function aiRoutes(app: FastifyInstance) {
     async (req) => {
       requireKb();
       const { jobDescription, jobType } = req.body as z.infer<typeof playbookBody>;
+      const filters = jobType ? [{ labelset: "jobType", label: jobType }] : undefined;
+      const threshold = await getAiConfidenceThreshold();
+      // Probe with a plain grounded ask first: if ARAG can't ground the job
+      // (sentinel) or the score is below threshold, don't fabricate a
+      // structured playbook (e.g. "sing at a kids party" at a maintenance co).
+      const probe = await wrap(ask({ query: jobDescription, filters }));
+      if (isLowConfidenceAnswer(probe.answer) || probe.confidence < threshold) {
+        return {
+          jobDescription,
+          jobType: jobType ?? null,
+          playbook: null,
+          lowConfidence: true,
+          confidence: probe.confidence,
+          message:
+            "Not enough comparable jobs or safety documentation to build a reliable playbook for this. " +
+            "Try a job closer to the work this business does.",
+          citations: [],
+        };
+      }
       const query = [
         `Create a standard job playbook for: "${jobDescription}".`,
         `Base it on comparable past MaintenanceOS work orders and the relevant safety/policy documents.`,
         `Return ONLY a JSON object with these keys:`,
         `{"title": string, "requiredSkills": string[], "typicalMaterials": string[], "estimatedHours": number, "steps": string[], "safetyControls": string[]}.`,
       ].join(" ");
-      const filters = jobType ? [{ labelset: "jobType", label: jobType }] : undefined;
       const res = await wrap(ask({ query, filters }));
       const playbook = extractJson(res.answer);
       return {
         jobDescription,
         jobType: jobType ?? null,
         playbook: playbook ?? null,
+        lowConfidence: false,
+        confidence: probe.confidence,
         // Always include the raw answer so the UI degrades gracefully if the
         // model didn't return clean JSON.
         raw: playbook ? undefined : res.answer,
@@ -261,7 +302,18 @@ export async function aiRoutes(app: FastifyInstance) {
       const { workOrderId } = req.body as { workOrderId: string };
       const r = await wrap(draftQuote(workOrderId));
       if (!r) throw new ApiError(404, "Work order not found");
-      return r;
+      // Only draft when grounded in enough comparable completed jobs.
+      if (!r.draft || r.comparables.length < 2) {
+        return {
+          draft: null,
+          comparables: r.comparables,
+          lowConfidence: true,
+          message:
+            "Not enough comparable completed jobs to draft a confident quote — " +
+            "please quote this one manually.",
+        };
+      }
+      return { ...r, lowConfidence: false };
     }
   );
 }

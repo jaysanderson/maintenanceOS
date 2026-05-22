@@ -15,6 +15,8 @@ export interface CompanyConfig {
   gstRate: number; // fraction, e.g. 0.1
   marginRiskThreshold: number; // fraction, e.g. 0.25
   defaultPaymentTerms: string;
+  /** Min ARAG retrieval score (0–1) to trust an AI answer/generation. */
+  aiConfidenceThreshold: number;
 }
 
 const DEFAULTS: CompanyConfig = {
@@ -26,6 +28,9 @@ const DEFAULTS: CompanyConfig = {
   gstRate: GST_RATE,
   marginRiskThreshold: MARGIN_RISK_THRESHOLD,
   defaultPaymentTerms: "NET_30",
+  // Secondary guard (0–1). The primary low-confidence signal is ARAG's
+  // "not enough data" sentinel; this score gate adds a tunable backstop.
+  aiConfidenceThreshold: 0.05,
 };
 
 const num = (v: string | undefined, d: number) => {
@@ -48,11 +53,24 @@ export async function getCompanyConfig(): Promise<CompanyConfig> {
     ),
     defaultPaymentTerms:
       s["finance.defaultPaymentTerms"] ?? DEFAULTS.defaultPaymentTerms,
+    aiConfidenceThreshold: num(
+      s["ai.confidenceThreshold"],
+      DEFAULTS.aiConfidenceThreshold
+    ),
   };
 }
 
 export async function getGstRate(): Promise<number> {
   return num(await getSetting("finance.gstRate"), DEFAULTS.gstRate);
+}
+
+/** Min ARAG retrieval score (0–1) below which AI output is treated as
+ *  low-confidence and suppressed in favour of a friendly message. */
+export async function getAiConfidenceThreshold(): Promise<number> {
+  return num(
+    await getSetting("ai.confidenceThreshold"),
+    DEFAULTS.aiConfidenceThreshold
+  );
 }
 
 export async function getMarginRiskThreshold(): Promise<number> {

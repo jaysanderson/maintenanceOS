@@ -92,9 +92,52 @@ export async function upsertErpDoc(
   return { slug: doc.slug, action: res.created ? "created" : "updated" };
 }
 
-/** F1 retrieval: grounded, cited answer. */
+/**
+ * Soft grounding system prompt. Deliberately NOT a hard refusal directive —
+ * ARAG already returns a "Not enough data" sentinel when retrieval is weak,
+ * and an over-strict prompt makes it refuse legitimate questions too. This
+ * just keeps answers grounded, cited and free of invented figures.
+ */
+export const GROUNDING_SYSTEM_PROMPT =
+  "You are MaintenanceOS's assistant for a property-maintenance company. " +
+  "Answer from the company's work orders, quotes, invoices and safety/policy " +
+  "documents. Cite work order (WO-...) and invoice (INV-...) numbers where " +
+  "relevant. Never invent figures or use outside knowledge. Be concise.";
+
+/** Shown to the user when an answer is judged low-confidence / ungrounded. */
+export const LOW_CONFIDENCE_MESSAGE =
+  "I don't have enough relevant information in the knowledge base to answer " +
+  "that confidently. Try rephrasing, or make sure related jobs and documents " +
+  "have been added.";
+
+/**
+ * True when an /ask answer is ARAG's "no grounded answer" sentinel (or a
+ * close variant) — the reliable low-confidence signal. We surface a friendly
+ * message instead of this raw text.
+ */
+export function isLowConfidenceAnswer(answer: string): boolean {
+  const a = answer.trim().toLowerCase();
+  if (a.length === 0) return true;
+  return (
+    /not enough (data|information|context)/.test(a) ||
+    /no (relevant|enough) (data|information|context)/.test(a) ||
+    /don'?t have enough (data|information|context|relevant)/.test(a) ||
+    /could ?n'?t find|unable to (answer|find)|insufficient (data|information)/.test(a)
+  );
+}
+
+/** F1 retrieval: grounded, cited answer (soft grounding system prompt). */
 export function ask(req: AragAskRequest): Promise<AragAskResponse> {
-  return kb().ask(req);
+  return kb().ask({ systemPrompt: GROUNDING_SYSTEM_PROMPT, ...req });
+}
+
+/** Retrieval confidence (0–1) for a query — the max supporting score. */
+export async function retrievalConfidence(
+  query: string,
+  filters?: AragAskRequest["filters"]
+): Promise<number> {
+  const r = await kb().find({ query, filters, limit: 8 });
+  return r.confidence;
 }
 
 /** Streaming /ask (token generator). */

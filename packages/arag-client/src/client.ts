@@ -61,6 +61,28 @@ function extractCitations(data: Record<string, unknown>): { resourceId: string; 
   }));
 }
 
+/**
+ * Max paragraph retrieval score (0–1) across all resources in a /find or
+ * /ask response — our confidence signal. The reranker emits ~0.9+ for
+ * strongly relevant matches and ~0 for irrelevant ones, so the top score
+ * is a reliable "did we actually find anything relevant?" measure.
+ */
+function maxParagraphScore(resources: unknown): number {
+  if (!isRecord(resources)) return 0;
+  let max = 0;
+  for (const r of Object.values(resources)) {
+    if (!isRecord(r)) continue;
+    const fields = isRecord(r.fields) ? r.fields : {};
+    for (const fv of Object.values(fields)) {
+      const paras = isRecord(fv) && isRecord(fv.paragraphs) ? fv.paragraphs : {};
+      for (const p of Object.values(paras)) {
+        if (isRecord(p) && typeof p.score === 'number' && p.score > max) max = p.score;
+      }
+    }
+  }
+  return max;
+}
+
 function extractHits(
   data: Record<string, unknown>,
 ): { resourceId: string; slug?: string; title: string; score: number; snippet?: string }[] {
@@ -179,10 +201,13 @@ export class AragClient {
     if (req.filters?.length) {
       body.filters = req.filters.map((f) => `/classification.labels/${f.labelset}/${f.label}`);
     }
+    // Custom system prompt (grounding/refusal). The /ask `prompt` field
+    // accepts a { system, user, rephrase } object.
+    if (req.systemPrompt) body.prompt = { system: req.systemPrompt };
     return body;
   }
 
-  /** RAG-powered Q&A (synchronous): one assembled answer + citations. */
+  /** RAG-powered Q&A (synchronous): assembled answer + citations + confidence. */
   async ask(kbId: string, req: AragAskRequest): Promise<AragAskResponse> {
     const data = await this.json<Record<string, unknown>>({
       method: 'POST',
@@ -190,9 +215,12 @@ export class AragClient {
       headers: { 'x-synchronous': 'true' },
       body: this.askBody(req),
     });
+    const rr = data.retrieval_results;
+    const resources = isRecord(rr) ? rr.resources : undefined;
     return {
       answer: typeof data.answer === 'string' ? data.answer : '',
       citations: extractCitations(data),
+      confidence: maxParagraphScore(resources),
     };
   }
 
@@ -267,7 +295,7 @@ export class AragClient {
       path: this.kbPath(kbId, 'find'),
       body,
     });
-    return { hits: extractHits(data) };
+    return { hits: extractHits(data), confidence: maxParagraphScore(data.resources) };
   }
 
   /** Authenticated KB info — also the per-KB health/auth check. */

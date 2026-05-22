@@ -103,11 +103,15 @@ export interface AragAskRequest {
   query: string;
   context?: AragContextTurn[];
   filters?: AragClassification[];
+  /** System prompt for the generative model (grounding/refusal behaviour). */
+  systemPrompt?: string;
 }
 
 export interface AragAskResponse {
   answer: string;
   citations: AragCitation[];
+  /** Max retrieval score (0–1) of the supporting context — our confidence. */
+  confidence: number;
 }
 
 export interface AragFindRequest {
@@ -127,6 +131,8 @@ export interface AragFindHit {
 
 export interface AragFindResponse {
   hits: AragFindHit[];
+  /** Max retrieval score (0–1) across results — our confidence signal. */
+  confidence: number;
 }
 
 /** A labelset definition (taxonomy). `kind` defaults to ['RESOURCES']. */

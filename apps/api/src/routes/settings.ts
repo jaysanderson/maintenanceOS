@@ -14,6 +14,7 @@ const putSchema = z.object({
   gstRate: z.number().min(0).max(1).optional(),
   marginRiskThreshold: z.number().min(0).max(1).optional(),
   defaultPaymentTerms: z.string().optional(),
+  aiConfidenceThreshold: z.number().min(0).max(1).optional(),
 });
 
 export async function settingsRoutes(app: FastifyInstance) {
@@ -44,6 +45,10 @@ export async function settingsRoutes(app: FastifyInstance) {
             ? String(body.marginRiskThreshold)
             : undefined,
         "finance.defaultPaymentTerms": body.defaultPaymentTerms,
+        "ai.confidenceThreshold":
+          body.aiConfidenceThreshold !== undefined
+            ? String(body.aiConfidenceThreshold)
+            : undefined,
       });
       await audit(req.authUser, {
         action: "SETTINGS_UPDATED",
