@@ -9,7 +9,7 @@
 import { prisma } from "../prisma.js";
 import { computeJobCosting, computeStockLevels } from "./costing.js";
 import { getMarginRiskThreshold } from "./config.js";
-import { predictChat, upsertErpDoc } from "./arag.js";
+import { predictChat, upsertErpDoc, isLowConfidenceAnswer, LOW_CONFIDENCE_MESSAGE } from "./arag.js";
 
 interface PlaybookShape {
   title?: string;
@@ -350,5 +350,184 @@ export async function draftQuote(workOrderId: string): Promise<{
       total: c.total, marginPercent: c.marginPercent,
     })),
     raw: draft ? undefined : raw,
+  };
+}
+
+// ── #5 "Ask your business" Ops Assistant (hybrid) ────────────────────────
+//
+// The agent's `sql` driver would be ideal here but it needs a network-reachable
+// DSN, and our SQLite-on-Fly DB isn't exposed. The hybrid pattern (same as F4
+// Briefing / F5 Dispatch / F3 Quote-draft) is reliable: gather a rich ops
+// snapshot from Prisma, then ARAG /predict/chat narrates an answer grounded
+// in that snapshot. Stays consistent with "ARAG is the only AI gateway".
+
+async function gatherOpsSnapshot(): Promise<Record<string, unknown>> {
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const todayEnd = new Date(todayStart.getTime() + 86400000);
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+  const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+  const nextWeek = new Date(now.getTime() + 7 * 86400000);
+
+  const [
+    openCount,
+    unassignedCount,
+    dueToday,
+    waitingOnParts,
+    breachedWOs,
+    overdueInvoices,
+    monthInvoices,
+    technicians,
+    recentCompleted,
+    upcoming,
+  ] = await Promise.all([
+    prisma.workOrder.count({ where: { status: { in: OPEN } } }),
+    prisma.workOrder.count({ where: { status: { in: OPEN }, assignedEmployeeId: null } }),
+    prisma.workOrder.count({
+      where: { status: { in: OPEN }, slaDueAt: { gte: todayStart, lt: todayEnd } },
+    }),
+    prisma.workOrder.count({ where: { status: "WAITING_ON_PARTS" } }),
+    prisma.workOrder.findMany({
+      where: { status: { in: OPEN }, slaDueAt: { lt: now } },
+      include: { account: true, assignedEmployee: true },
+      orderBy: { slaDueAt: "asc" },
+      take: 10,
+    }),
+    prisma.invoice.findMany({
+      where: { status: { in: ["SENT", "OVERDUE"] }, dueAt: { lt: now } },
+      include: { account: true },
+      orderBy: { dueAt: "asc" },
+      take: 10,
+    }),
+    prisma.invoice.findMany({
+      where: { issuedAt: { gte: monthStart, lt: monthEnd } },
+      select: { subtotal: true, total: true, status: true, workOrderId: true },
+    }),
+    prisma.employee.findMany({
+      where: { active: true, role: { in: ["TECHNICIAN", "SENIOR_TECHNICIAN"] } },
+      include: {
+        skills: { include: { skill: true } },
+        workOrders: { where: { status: { in: OPEN } }, select: { id: true } },
+      },
+    }),
+    prisma.workOrder.findMany({
+      where: { status: { in: ["COMPLETED", "INVOICED", "CLOSED"] } },
+      orderBy: { updatedAt: "desc" },
+      take: 30,
+      select: { id: true },
+    }),
+    prisma.workOrder.findMany({
+      where: { scheduledStart: { gte: now, lt: nextWeek }, status: { in: OPEN } },
+      include: { account: true, assignedEmployee: true },
+      orderBy: { scheduledStart: "asc" },
+      take: 20,
+    }),
+  ]);
+
+  const revenueThisMonth = Math.round(monthInvoices.reduce((s, i) => s + i.subtotal, 0));
+  const outstandingThisMonth = Math.round(
+    monthInvoices
+      .filter((i) => ["SENT", "OVERDUE"].includes(i.status))
+      .reduce((s, i) => s + i.total, 0)
+  );
+
+  // Worst-margin among recently completed (mirrors the briefing).
+  const costed = [];
+  for (const j of recentCompleted) {
+    const c = await computeJobCosting(j.id);
+    if (c && c.revenue > 0) costed.push(c);
+  }
+  const worstMargin = costed
+    .sort((a, b) => a.grossMarginPercent - b.grossMarginPercent)
+    .slice(0, 5)
+    .map((c) => ({
+      workOrder: c.workOrderNumber,
+      title: c.title,
+      grossMarginPercent: c.grossMarginPercent,
+      revenue: c.revenue,
+    }));
+
+  const stock = await computeStockLevels();
+  const lowStock = stock
+    .filter((s) => s.lowStock)
+    .slice(0, 10)
+    .map((s) => ({ name: s.name, available: s.totalQuantity, reorderPoint: s.reorderPoint }));
+
+  const techName = (t: { firstName: string; lastName: string } | null) =>
+    t ? `${t.firstName} ${t.lastName}` : null;
+
+  return {
+    asOf: now.toISOString(),
+    counts: {
+      openWorkOrders: openCount,
+      unassignedJobs: unassignedCount,
+      jobsDueToday: dueToday,
+      slaBreaches: breachedWOs.length,
+      waitingOnParts,
+    },
+    revenue: {
+      thisMonthAud: revenueThisMonth,
+      outstandingThisMonthAud: outstandingThisMonth,
+    },
+    slaBreachedJobs: breachedWOs.map((w) => ({
+      workOrder: w.workOrderNumber,
+      title: w.title,
+      account: w.account.name,
+      priority: w.priority,
+      slaDueAt: w.slaDueAt,
+      technician: techName(w.assignedEmployee),
+    })),
+    overdueInvoices: overdueInvoices.map((i) => ({
+      invoice: i.invoiceNumber,
+      account: i.account.name,
+      total: i.total,
+      dueAt: i.dueAt,
+    })),
+    worstMarginJobs: worstMargin,
+    technicians: technicians.map((t) => ({
+      name: `${t.firstName} ${t.lastName}`,
+      role: t.role,
+      territory: t.territory,
+      openJobs: t.workOrders.length,
+      skills: t.skills.map((s) => s.skill.name),
+    })),
+    lowStockItems: lowStock,
+    upcomingScheduled: upcoming.map((w) => ({
+      workOrder: w.workOrderNumber,
+      title: w.title,
+      account: w.account.name,
+      scheduledStart: w.scheduledStart,
+      technician: techName(w.assignedEmployee),
+    })),
+  };
+}
+
+/**
+ * "Ask your business" — NL question against a live ops snapshot, narrated
+ * by ARAG. Returns a friendly low-confidence message when the snapshot
+ * doesn't cover the question.
+ */
+export async function opsAssistant(
+  question: string
+): Promise<{ answer: string; lowConfidence: boolean; snapshotKeys: string[] }> {
+  const snapshot = await gatherOpsSnapshot();
+  const system =
+    "You are MaintenanceOS's operations assistant for a property-maintenance company. " +
+    "Answer the operations manager's question using ONLY the JSON ops snapshot provided. " +
+    "Cite specific work-order numbers (WO-...), invoice numbers (INV-...) and account names. " +
+    "Be concise (a few sentences or short bullets). Show actual numbers from the snapshot. " +
+    "If the snapshot doesn't contain the information needed, reply briefly that the data " +
+    "isn't in the current snapshot — never invent figures or use outside knowledge.";
+
+  const answer = await predictChat(
+    question,
+    [system, `OPS SNAPSHOT (current live state):\n${JSON.stringify(snapshot)}`],
+    { systemPrompt: system }
+  );
+  const lowConfidence = isLowConfidenceAnswer(answer);
+  return {
+    answer: lowConfidence ? LOW_CONFIDENCE_MESSAGE : answer,
+    lowConfidence,
+    snapshotKeys: Object.keys(snapshot),
   };
 }

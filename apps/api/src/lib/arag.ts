@@ -122,7 +122,10 @@ export function isLowConfidenceAnswer(answer: string): boolean {
     /not enough (data|information|context)/.test(a) ||
     /no (relevant|enough) (data|information|context)/.test(a) ||
     /don'?t have enough (data|information|context|relevant)/.test(a) ||
-    /could ?n'?t find|unable to (answer|find)|insufficient (data|information)/.test(a)
+    /could ?n'?t find|unable to (answer|find)|insufficient (data|information)/.test(a) ||
+    /(snapshot|data) (does not|doesn'?t) (contain|include|have)/.test(a) ||
+    /no (record|information|details) (of|about|on)/.test(a) ||
+    /the (snapshot|provided data) (does not|doesn'?t)/.test(a)
   );
 }
 

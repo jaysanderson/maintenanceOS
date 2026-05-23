@@ -19,7 +19,7 @@ import {
   LOW_CONFIDENCE_MESSAGE,
   type ErpDoc,
 } from "../lib/arag.js";
-import { generateBriefing, dispatchActions, draftQuote, savePlaybook } from "../lib/aiFeatures.js";
+import { generateBriefing, dispatchActions, draftQuote, savePlaybook, opsAssistant } from "../lib/aiFeatures.js";
 import { getAiConfidenceThreshold } from "../lib/config.js";
 import { AragError } from "@maintenanceos/arag-client";
 
@@ -314,6 +314,25 @@ export async function aiRoutes(app: FastifyInstance) {
         };
       }
       return { ...r, lowConfidence: false };
+    }
+  );
+
+  // #5 — Ops Assistant: NL questions over the live ERP state (hybrid:
+  // Prisma snapshot + ARAG /predict/chat narration).
+  app.post(
+    "/ops-assistant",
+    {
+      schema: {
+        tags: ["AI"],
+        summary: "Ask a natural-language question over the live operations state",
+        body: z.object({ question: z.string().min(3).max(500) }),
+      },
+    },
+    async (req) => {
+      requireKb();
+      const { question } = req.body as { question: string };
+      const r = await wrap(opsAssistant(question));
+      return r;
     }
   );
 }
