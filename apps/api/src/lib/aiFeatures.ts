@@ -139,18 +139,28 @@ export async function generateBriefing(): Promise<{
   const worstMargin = costed
     .sort((a, b) => a.grossMarginPercent - b.grossMarginPercent)
     .slice(0, 5)
-    .map((c) => ({ workOrder: c.workOrderNumber, title: c.title, grossMarginPercent: c.grossMarginPercent, revenue: c.revenue }));
+    .map((c) => ({
+      id: c.workOrderId,
+      workOrder: c.workOrderNumber,
+      title: c.title,
+      grossMarginPercent: c.grossMarginPercent,
+      revenue: c.revenue,
+    }));
 
+  // Include record IDs so the UI can fetch full detail in a quick modal
+  // when the manager clicks a SLA-breach / invoice / margin-risk row.
   const data = {
     openWorkOrders: openCount,
     unassignedJobs: unassignedCount,
     jobsDueToday: dueToday,
     slaBreaches: breachedWOs.length,
     slaBreachedJobs: breachedWOs.map((w) => ({
+      id: w.id,
       workOrder: w.workOrderNumber, title: w.title, account: w.account.name,
       priority: w.priority, slaDueAt: w.slaDueAt,
     })),
     overdueInvoices: overdueInvoices.map((i) => ({
+      id: i.id,
       invoice: i.invoiceNumber, account: i.account.name, total: i.total, dueAt: i.dueAt,
     })),
     revenueThisMonthAud: revenueThisMonth,
@@ -158,15 +168,19 @@ export async function generateBriefing(): Promise<{
     worstMarginJobs: worstMargin,
   };
 
+  // The narrative is a short executive insight, not a bullet list — the UI
+  // renders the SLA breaches, overdue invoices, margin risk and stock as
+  // interactive cards using `data` directly. ARAG's job here is the "what
+  // should I focus on first?" hot-take a manager wants over their coffee.
   const system =
     "You are the operations manager's daily briefing assistant for a property-maintenance company. " +
-    "Write a tight, prioritised morning briefing as 6-10 markdown bullet points. Lead with the most urgent " +
-    "items (SLA breaches, unassigned urgent jobs), then money (overdue invoices, margin risk), then stock. " +
-    "Cite the specific work order (WO-...) and invoice (INV-...) numbers from the data. Each bullet ends with a " +
-    "concrete recommended action. Use ONLY the numbers in the data; do not invent figures.";
+    "Read the DATA and write a 2-3 sentence executive headline — what is the single most important thing " +
+    "to focus on right now, and why. Be specific: name accounts, cite WO-/INV- numbers, give exact dollar " +
+    "amounts when they matter. Do NOT enumerate every item (the dashboard already lists them). Plain prose, " +
+    "no bullet points, no markdown headings. Use ONLY the numbers in the data; do not invent figures.";
 
   const briefing = await predictChat(
-    "Produce today's operations briefing from this data.",
+    "Write today's executive briefing headline.",
     [system, `DATA:\n${JSON.stringify(data)}`],
     { systemPrompt: system }
   );
