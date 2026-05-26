@@ -17,6 +17,14 @@ export interface CompanyConfig {
   defaultPaymentTerms: string;
   /** Min ARAG retrieval score (0–1) to trust an AI answer/generation. */
   aiConfidenceThreshold: number;
+  /**
+   * When true, the /mcp endpoint will accept requests with no bearer token
+   * and act as `mcpPublicUserId` (typically a low-privilege account). Used
+   * for demos and quick testing. Off by default for safety.
+   */
+  mcpPublicAccess: boolean;
+  /** Which user anonymous /mcp requests impersonate when public mode is on. */
+  mcpPublicUserId: string | null;
 }
 
 const DEFAULTS: CompanyConfig = {
@@ -31,6 +39,8 @@ const DEFAULTS: CompanyConfig = {
   // Secondary guard (0–1). The primary low-confidence signal is ARAG's
   // "not enough data" sentinel; this score gate adds a tunable backstop.
   aiConfidenceThreshold: 0.05,
+  mcpPublicAccess: false,
+  mcpPublicUserId: null,
 };
 
 const num = (v: string | undefined, d: number) => {
@@ -57,7 +67,24 @@ export async function getCompanyConfig(): Promise<CompanyConfig> {
       s["ai.confidenceThreshold"],
       DEFAULTS.aiConfidenceThreshold
     ),
+    mcpPublicAccess: s["mcp.publicAccess"] === "true",
+    mcpPublicUserId: s["mcp.publicUserId"] ?? null,
   };
+}
+
+/**
+ * Public-MCP settings — read together because the /mcp request hot-path
+ * reads both flags on every anonymous call.
+ */
+export async function getMcpPublicAccess(): Promise<{
+  enabled: boolean;
+  userId: string | null;
+}> {
+  const [enabled, userId] = await Promise.all([
+    getSetting("mcp.publicAccess"),
+    getSetting("mcp.publicUserId"),
+  ]);
+  return { enabled: enabled === "true", userId: userId ?? null };
 }
 
 export async function getGstRate(): Promise<number> {

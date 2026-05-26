@@ -15,6 +15,13 @@ const putSchema = z.object({
   marginRiskThreshold: z.number().min(0).max(1).optional(),
   defaultPaymentTerms: z.string().optional(),
   aiConfidenceThreshold: z.number().min(0).max(1).optional(),
+  /**
+   * Enable anonymous /mcp access (acts as mcpPublicUserId, falls back to
+   * the toggling user). For test/demo only — exposes ERP data without
+   * authentication. Default false.
+   */
+  mcpPublicAccess: z.boolean().optional(),
+  mcpPublicUserId: z.string().nullable().optional(),
 });
 
 export async function settingsRoutes(app: FastifyInstance) {
@@ -32,6 +39,14 @@ export async function settingsRoutes(app: FastifyInstance) {
     },
     async (req) => {
       const body = req.body as z.infer<typeof putSchema>;
+      // When the user toggles public-MCP on without naming a user,
+      // default the public identity to themselves so anonymous /mcp calls
+      // inherit their (admin) role. They can change this later.
+      const resolvedPublicUserId =
+        body.mcpPublicAccess === true && body.mcpPublicUserId === undefined
+          ? req.authUser.id
+          : body.mcpPublicUserId;
+
       await updateCompanyConfig({
         "company.name": body.companyName,
         "company.abn": body.abn,
@@ -49,6 +64,14 @@ export async function settingsRoutes(app: FastifyInstance) {
           body.aiConfidenceThreshold !== undefined
             ? String(body.aiConfidenceThreshold)
             : undefined,
+        "mcp.publicAccess":
+          body.mcpPublicAccess !== undefined
+            ? String(body.mcpPublicAccess)
+            : undefined,
+        "mcp.publicUserId":
+          resolvedPublicUserId === null
+            ? ""
+            : resolvedPublicUserId,
       });
       await audit(req.authUser, {
         action: "SETTINGS_UPDATED",

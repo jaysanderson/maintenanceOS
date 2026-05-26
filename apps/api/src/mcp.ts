@@ -15,6 +15,9 @@ import {
   createServer,
   type ApiClient,
 } from "@maintenanceos/mcp-core";
+import { prisma } from "./prisma.js";
+import { getMcpPublicAccess } from "./lib/config.js";
+import type { Role } from "./lib/auth.js";
 
 let cachedSpec: unknown | null = null;
 
@@ -72,7 +75,38 @@ export async function mcpPlugin(app: FastifyInstance): Promise<void> {
     url: "/mcp",
     schema: { hide: true },
     handler: async (req: FastifyRequest, reply: FastifyReply) => {
-      const bearerToken = extractBearer(req);
+      let bearerToken = extractBearer(req);
+
+      // Public-MCP fallback: when the caller didn't present any token,
+      // check the company setting. If public access is enabled and a
+      // public-user is configured, mint a short-lived JWT for that user
+      // on the fly — the rest of the request then flows through the
+      // normal auth path (so RBAC, audit, etc. all still apply).
+      // Off by default; intended for demos.
+      if (!bearerToken) {
+        const pub = await getMcpPublicAccess();
+        if (pub.enabled && pub.userId) {
+          const user = await prisma.user.findUnique({
+            where: { id: pub.userId },
+          });
+          if (user && user.active) {
+            bearerToken = (app as unknown as { jwt: { sign: (p: unknown, o: unknown) => string } }).jwt.sign(
+              {
+                sub: user.id,
+                email: user.email,
+                role: user.role as Role,
+                name: user.name,
+              },
+              { expiresIn: "5m" }
+            );
+            app.log.info(
+              { userId: user.id, email: user.email },
+              "MCP: anonymous request, using public-access user"
+            );
+          }
+        }
+      }
+
       let spec: unknown;
       try {
         spec = getSpec(app);
