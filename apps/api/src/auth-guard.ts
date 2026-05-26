@@ -2,6 +2,10 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 import { prisma } from "./prisma.js";
 import { ApiError } from "./lib/errors.js";
 import type { AuthUser, Role } from "./lib/auth.js";
+import {
+  looksLikeAccessToken,
+  verifyAccessToken,
+} from "./lib/access-tokens.js";
 
 declare module "@fastify/jwt" {
   interface FastifyJWT {
@@ -19,24 +23,49 @@ declare module "fastify" {
 /** Paths under /api that do NOT require authentication. */
 const PUBLIC_PATHS = new Set(["/api/auth/login"]);
 
+/** Pull a bearer token off the Authorization header, if present. */
+function extractBearer(req: FastifyRequest): string | undefined {
+  const auth = req.headers["authorization"];
+  if (typeof auth !== "string") return undefined;
+  if (!auth.toLowerCase().startsWith("bearer ")) return undefined;
+  return auth.slice(7).trim() || undefined;
+}
+
 /**
- * onRequest hook: verify the JWT and attach the live user. Public auth
- * endpoints are exempt. Rejects inactive/deleted users even with a valid token.
+ * onRequest hook: verify the caller's bearer (either a session JWT or a
+ * long-lived access token) and attach the live user. Public auth endpoints
+ * are exempt. Rejects inactive/deleted users even with a valid token.
+ *
+ * We dispatch on the token shape: access tokens start with `mos_` and are
+ * looked up by sha256 hash. Anything else falls through to JWT verify —
+ * preserving the existing flow for browser sessions.
  */
 export async function requireAuth(
   req: FastifyRequest,
-  reply: FastifyReply
+  _reply: FastifyReply
 ): Promise<void> {
   const routePath = (req as { routerPath?: string }).routerPath ?? req.url.split("?")[0];
   if (PUBLIC_PATHS.has(routePath)) return;
 
-  try {
-    await req.jwtVerify();
-  } catch {
-    throw new ApiError(401, "Authentication required");
+  const bearer = extractBearer(req);
+  let userId: string | null = null;
+
+  if (bearer && looksLikeAccessToken(bearer)) {
+    const verified = await verifyAccessToken(bearer);
+    if (!verified) {
+      throw new ApiError(401, "Access token is invalid, revoked, or expired");
+    }
+    userId = verified.userId;
+  } else {
+    try {
+      await req.jwtVerify();
+    } catch {
+      throw new ApiError(401, "Authentication required");
+    }
+    userId = req.user.sub;
   }
-  const payload = req.user;
-  const user = await prisma.user.findUnique({ where: { id: payload.sub } });
+
+  const user = await prisma.user.findUnique({ where: { id: userId } });
   if (!user || !user.active) {
     throw new ApiError(401, "Account is inactive or no longer exists");
   }

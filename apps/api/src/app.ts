@@ -22,6 +22,7 @@ import { JWT_SECRET, ADMIN_ROLES } from "./lib/auth.js";
 import { requireAuth } from "./auth-guard.js";
 
 import { authRoutes } from "./routes/auth.js";
+import { accessTokenRoutes } from "./routes/access-tokens.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
 import { accountRoutes } from "./routes/accounts.js";
 import { siteRoutes } from "./routes/sites.js";
@@ -247,6 +248,7 @@ export async function buildApp(): Promise<FastifyInstance> {
     });
 
     await instance.register(authRoutes, { prefix: "/auth" });
+    await instance.register(accessTokenRoutes, { prefix: "/access-tokens" });
     await instance.register(dashboardRoutes, { prefix: "/dashboard" });
     await instance.register(accountRoutes, { prefix: "/accounts" });
     await instance.register(siteRoutes, { prefix: "/sites" });

@@ -321,7 +321,27 @@ model User {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  auditLogs AuditLog[]
+  auditLogs    AuditLog[]
+  accessTokens AccessToken[]
+}
+
+// Long-lived API/MCP tokens. Distinct from the 12-hour session JWT —
+// these survive password rotations and only expire when explicitly
+// revoked (or when an optional expiresAt is set). The raw value is
+// stored only as a SHA-256 hash, so the database never holds the secret.
+model AccessToken {
+  id         String    @id @default(cuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name       String // user-supplied label, e.g. "Claude Desktop"
+  prefix     String // first 12 chars of the raw token for display, e.g. "mos_3a7K8w…"
+  tokenHash  String    @unique // sha256(token) — used for lookup at verify-time
+  expiresAt  DateTime? // null = never expires
+  lastUsedAt DateTime?
+  revokedAt  DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([userId])
 }
 
 // Append-only record of significant actions for accountability/disputes.
