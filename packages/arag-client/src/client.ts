@@ -11,6 +11,7 @@ import {
   type AragPredictChatRequest,
   type AragResourceInput,
   type AragUpsertResult,
+  type AragVisionRequest,
 } from './types.js';
 
 /** Inlined to keep this package dependency-free. */
@@ -118,6 +119,7 @@ function extractHits(
 export class AragClient {
   private readonly baseUrl: string;
   private readonly apiKey: string;
+  private readonly nuaKey?: string;
   private readonly timeoutMs: number;
   private readonly maxRetries: number;
 
@@ -127,8 +129,14 @@ export class AragClient {
     }
     this.baseUrl = config.baseUrl.replace(/\/+$/, '');
     this.apiKey = config.apiKey;
+    this.nuaKey = config.nuaKey;
     this.timeoutMs = config.timeoutMs ?? 30_000;
     this.maxRetries = config.maxRetries ?? 3;
+  }
+
+  /** True when a NUA key is configured (required for the vision/compat path). */
+  hasNuaKey(): boolean {
+    return Boolean(this.nuaKey);
   }
 
   private kbPath(kbId: string, suffix: string): string {
@@ -284,6 +292,48 @@ export class AragClient {
     return text.replace(/[-]?\d+\s*$/, '').trim();
   }
 
+  /**
+   * Single-turn **vision** call via the OpenAI-compatible endpoint
+   * (`/api/v1/predict/compat/chat/completions`). The image is sent inline as
+   * a base64 data URL. Not KB-scoped — the compat surface is account-level.
+   * Returns the assistant message text (the caller parses any JSON out).
+   *
+   * Used for the document-extraction write-path (supplier PO → draft, etc.).
+   * Keeps "ARAG is the only AI gateway": the visual model is ARAG's.
+   */
+  async compatChatVision(req: AragVisionRequest): Promise<string> {
+    if (!this.nuaKey) {
+      throw new AragError(
+        'config',
+        'compatChatVision requires a NUA key (set ARAG_NUA_KEY); the KB service-account key cannot access the /predict/compat endpoint',
+      );
+    }
+    const dataUrl = `data:${req.mimeType};base64,${req.imageBase64}`;
+    const data = await this.json<{
+      choices?: Array<{ message?: { content?: string } }>;
+    }>({
+      method: 'POST',
+      path: '/api/v1/predict/compat/chat/completions',
+      // The compat surface authenticates with the NUA key, not the KB key.
+      headers: { authorization: `Bearer ${this.nuaKey}` },
+      body: {
+        model: req.model,
+        ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
+        messages: [
+          { role: 'system', content: req.system },
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: req.userText },
+              { type: 'image_url', image_url: { url: dataUrl } },
+            ],
+          },
+        ],
+      },
+    });
+    return data.choices?.[0]?.message?.content?.trim() ?? '';
+  }
+
   /** Semantic + keyword + graph search. */
   async find(kbId: string, req: AragFindRequest): Promise<AragFindResponse> {
     const body: Record<string, unknown> = { query: req.query, page_size: req.limit ?? 20 };
@@ -368,6 +418,141 @@ export class AragClient {
       method: 'DELETE',
       path: `/api/v1/kb/${encodeURIComponent(kbId)}/slug/${encodeURIComponent(slug)}`,
     });
+  }
+
+  async deleteResourceById(kbId: string, rid: string): Promise<void> {
+    await this.raw({
+      method: 'DELETE',
+      path: `/api/v1/kb/${encodeURIComponent(kbId)}/resource/${encodeURIComponent(rid)}`,
+      noRetry: true,
+    });
+  }
+
+  /**
+   * Upload a binary file onto an existing resource's `file` field. ARAG then
+   * processes it server-side (text extraction / OCR). Binary body, so it
+   * bypasses the JSON `raw()` helper.
+   */
+  async uploadFile(
+    kbId: string,
+    rid: string,
+    field: string,
+    body: Buffer | Uint8Array,
+    filename: string,
+    contentType: string,
+    extractStrategy?: string,
+  ): Promise<void> {
+    const url = `${this.baseUrl}/api/v1/kb/${encodeURIComponent(kbId)}/resource/${encodeURIComponent(rid)}/file/${encodeURIComponent(field)}/upload`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${this.apiKey}`,
+          'content-type': contentType,
+          'x-filename': filename,
+          // Apply a custom VLLM extract strategy (rules-based visual
+          // extraction for scanned PDFs/images). Pass the strategy id.
+          ...(extractStrategy ? { 'x-extract-strategy': extractStrategy } : {}),
+        },
+        body,
+        signal: controller.signal,
+      });
+      if (!res.ok) {
+        throw new AragError('http', `ARAG ${res.status} on file upload`, res.status);
+      }
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /** List the KB's custom extract strategies → { id: config }. */
+  listExtractStrategies(kbId: string): Promise<Record<string, { name?: string }>> {
+    return this.json<Record<string, { name?: string }>>({
+      method: 'GET',
+      path: `/api/v1/kb/${encodeURIComponent(kbId)}/extract_strategies`,
+      noRetry: true,
+    });
+  }
+
+  /**
+   * Idempotently ensure a named extract strategy exists; returns its id.
+   * Looks up by `name` first, creates with `config` if absent.
+   */
+  async ensureExtractStrategy(
+    kbId: string,
+    name: string,
+    config: Record<string, unknown>,
+  ): Promise<string> {
+    const existing = await this.listExtractStrategies(kbId);
+    for (const [id, cfg] of Object.entries(existing)) {
+      if (cfg?.name === name) return id;
+    }
+    const id = await this.json<string>({
+      method: 'POST',
+      path: `/api/v1/kb/${encodeURIComponent(kbId)}/extract_strategies`,
+      body: { name, ...config },
+    });
+    return typeof id === 'string' ? id : String(id);
+  }
+
+  /**
+   * Read the extracted text of a resource's file field(s). Returns '' until
+   * processing has produced text (caller polls). Concatenates all file fields.
+   */
+  async getExtractedText(kbId: string, rid: string): Promise<string> {
+    const data = await this.json<{
+      data?: { files?: Record<string, { extracted?: { text?: { text?: string } } }> };
+    }>({
+      method: 'GET',
+      path: `/api/v1/kb/${encodeURIComponent(kbId)}/resource/${encodeURIComponent(rid)}?show=extracted&show=values&extracted=text`,
+      noRetry: true,
+    });
+    const files = data.data?.files ?? {};
+    let text = '';
+    for (const fv of Object.values(files)) {
+      const t = fv.extracted?.text?.text;
+      if (t) text += (text ? '\n' : '') + t;
+    }
+    return text;
+  }
+
+  /**
+   * End-to-end: create a transient resource, upload the file, poll until ARAG
+   * has extracted its text, then (best-effort) delete the resource. Returns the
+   * extracted text (or '' if nothing was extracted in time). The transient
+   * resource keeps the KB clean — this is an extraction utility, not ingestion.
+   */
+  async ingestAndExtractText(
+    kbId: string,
+    body: Buffer | Uint8Array,
+    filename: string,
+    contentType: string,
+    opts?: { pollMs?: number; maxPolls?: number; keep?: boolean; extractStrategy?: string },
+  ): Promise<string> {
+    const pollMs = opts?.pollMs ?? 4000;
+    // VLLM extract strategies take longer (~30–60s) than plain OCR (~6s), so
+    // poll generously when a strategy is applied.
+    const maxPolls = opts?.maxPolls ?? (opts?.extractStrategy ? 40 : 20);
+    const created = await this.json<{ uuid?: string }>({
+      method: 'POST',
+      path: this.kbPath(kbId, 'resources'),
+      body: { title: filename, slug: `extract-${Date.now()}-${Math.round(body.length)}` },
+    });
+    const rid = created.uuid;
+    if (!rid) throw new AragError('parse', 'No resource id returned for upload');
+    try {
+      await this.uploadFile(kbId, rid, 'file', body, filename, contentType, opts?.extractStrategy);
+      for (let i = 0; i < maxPolls; i++) {
+        await sleep(pollMs);
+        const text = await this.getExtractedText(kbId, rid);
+        if (text.trim().length > 0) return text;
+      }
+      return '';
+    } finally {
+      if (!opts?.keep) await this.deleteResourceById(kbId, rid).catch(() => {});
+    }
   }
 
   /**
@@ -461,6 +646,9 @@ export class AragKbClient {
   predictChat(req: AragPredictChatRequest): Promise<string> {
     return this.client.predictChat(this.kbId, req);
   }
+  compatChatVision(req: AragVisionRequest): Promise<string> {
+    return this.client.compatChatVision(req);
+  }
   find(req: AragFindRequest): Promise<AragFindResponse> {
     return this.client.find(this.kbId, req);
   }
@@ -469,6 +657,20 @@ export class AragKbClient {
   }
   deleteResourceBySlug(slug: string): Promise<void> {
     return this.client.deleteResourceBySlug(this.kbId, slug);
+  }
+  ingestAndExtractText(
+    body: Buffer | Uint8Array,
+    filename: string,
+    contentType: string,
+    opts?: { pollMs?: number; maxPolls?: number; keep?: boolean; extractStrategy?: string },
+  ): Promise<string> {
+    return this.client.ingestAndExtractText(this.kbId, body, filename, contentType, opts);
+  }
+  ensureExtractStrategy(name: string, config: Record<string, unknown>): Promise<string> {
+    return this.client.ensureExtractStrategy(this.kbId, name, config);
+  }
+  listExtractStrategies(): Promise<Record<string, { name?: string }>> {
+    return this.client.listExtractStrategies(this.kbId);
   }
   setupDaTask(spec: import('./types.js').AragDaTaskParams): Promise<{ ok: boolean }> {
     return this.client.setupDaTask(this.kbId, spec);
@@ -670,6 +872,8 @@ function baseConfig(apiKey: string): AragConfig {
   return {
     baseUrl: process.env.ARAG_BASE_URL ?? '',
     apiKey,
+    // NUA key (optional) — only the vision/compat path uses it.
+    nuaKey: process.env.ARAG_NUA_KEY || undefined,
     timeoutMs: process.env.ARAG_TIMEOUT_MS ? Number(process.env.ARAG_TIMEOUT_MS) : undefined,
     maxRetries: process.env.ARAG_MAX_RETRIES ? Number(process.env.ARAG_MAX_RETRIES) : undefined,
   };

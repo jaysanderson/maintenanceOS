@@ -29,6 +29,7 @@ import {
   type AragClassification,
   type AragRelation,
   type AragDaTaskParams,
+  type AragVisionRequest,
 } from "@maintenanceos/arag-client";
 
 /** A serialized ERP record ready to upsert into the KB. */
@@ -160,6 +161,75 @@ export function predictChat(
   opts?: { model?: string; systemPrompt?: string }
 ): Promise<string> {
   return kb().predictChat({ question, queryContext, ...opts });
+}
+
+/**
+ * True when the vision/extraction path is usable — needs a NUA key
+ * (`ARAG_NUA_KEY`), which the OpenAI-compatible `/predict/compat` endpoint
+ * requires (the KB service-account key gets 403 there). Spiked 2026-05.
+ */
+export function visionConfigured(): boolean {
+  return aragConfigured() && Boolean(process.env.ARAG_NUA_KEY);
+}
+
+/** Default vision model for document extraction (overridable per call). */
+export const DEFAULT_VISION_MODEL =
+  process.env.ARAG_VISION_MODEL || "chatgpt-4.1";
+
+/**
+ * Single-turn vision call via ARAG's OpenAI-compatible endpoint — used by
+ * the document-extraction (write-path) features. ARAG stays the only AI
+ * gateway; the visual model is ARAG's. Returns the raw assistant text
+ * (caller parses JSON out with `extractJson`).
+ */
+export function visionExtract(
+  req: Omit<AragVisionRequest, "model"> & { model?: string }
+): Promise<string> {
+  return kb().compatChatVision({ model: DEFAULT_VISION_MODEL, ...req });
+}
+
+/**
+ * Document text extraction via ARAG ingestion: uploads the file to a
+ * transient KB resource, lets ARAG extract/OCR the text server-side, returns
+ * the extracted text, then deletes the resource. The compat endpoint can't
+ * see images on this deployment, so this is how we read documents.
+ */
+/** The provisioned rules-based VLLM extract strategy id, if configured. */
+export const DOC_EXTRACT_STRATEGY_ID = process.env.ARAG_EXTRACT_STRATEGY_ID || undefined;
+
+/**
+ * Extract a document's text via ARAG ingestion. By default uses fast OCR
+ * (~6s, great on text-layer PDFs and decent images). Pass `useVllmStrategy`
+ * to apply the rules-based visual-LLM extract strategy instead — slower
+ * (~30–60s) but better on hard scanned images. Caller does the two-pass
+ * (fast, then VLLM fallback) so good docs stay fast.
+ */
+export function ingestAndExtractText(
+  buffer: Buffer,
+  filename: string,
+  contentType: string,
+  opts?: { useVllmStrategy?: boolean }
+): Promise<string> {
+  const extractStrategy = opts?.useVllmStrategy ? DOC_EXTRACT_STRATEGY_ID : undefined;
+  return kb().ingestAndExtractText(buffer, filename, contentType, { extractStrategy });
+}
+
+/**
+ * Idempotently ensure the standard MaintenanceOS document extract strategy
+ * (rules-based visual-LLM extraction) exists; returns its id. Used by the
+ * provisioning script.
+ */
+export function ensureDocExtractStrategy(): Promise<string> {
+  return kb().ensureExtractStrategy("maintenanceos-docs", {
+    vllm_config: {
+      rules: [
+        "Transcribe the full document text faithfully, preserving order and layout.",
+        "Extract every line item as a row: description, supplier/product code, quantity, unit price, line total.",
+        "Capture header fields: supplier/vendor name, document/order/invoice number, all dates, and totals.",
+        "Preserve tables as structured rows; keep numbers and currency exactly as printed.",
+      ],
+    },
+  });
 }
 
 /** Provision/refresh a Data-Augmentation task (LABELER / LLM_GRAPH / …). */

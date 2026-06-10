@@ -19,7 +19,7 @@ import {
   LOW_CONFIDENCE_MESSAGE,
   type ErpDoc,
 } from "../lib/arag.js";
-import { generateBriefing, dispatchActions, draftQuote, savePlaybook, opsAssistant } from "../lib/aiFeatures.js";
+import { generateBriefing, dispatchActions, draftQuote, savePlaybook, opsAssistant, extractPurchaseOrderDraft, flagSimilarWorkOrders, suggestPartsKit, technicianDayPlan, draftCompletionNote, workOrderTimeline, siteAccessBriefing, timeEntryAnomaly, analyzeLostQuotes, accountHealth, draftDunning, fleetComplianceDigest, recurringRunPreview, demandAwareReorder, skillGapSignal, proactiveMaintenance, variationClaim, customerStatusUpdate, slaEarlyWarning, quoteRiskCheck, draftQuoteComms, marginInsight, triageRequest, safetyPreflight, recurringSuggester, execSummary, auditAssistant } from "../lib/aiFeatures.js";
 import { getAiConfidenceThreshold } from "../lib/config.js";
 import { AragError } from "@maintenanceos/arag-client";
 
@@ -333,6 +333,266 @@ export async function aiRoutes(app: FastifyInstance) {
       const { question } = req.body as { question: string };
       const r = await wrap(opsAssistant(question));
       return r;
+    }
+  );
+
+  // J1 — Document Intelligence (write-path): extract a draft Purchase Order
+  // from an uploaded supplier doc via ARAG's vision model. Multipart upload;
+  // returns a DRAFT only — the reviewed draft is created via the existing
+  // POST /api/purchase-orders endpoint. Needs a NUA key (ARAG_NUA_KEY).
+  app.post(
+    "/extract-document",
+    {
+      schema: {
+        tags: ["AI"],
+        summary: "Extract a draft purchase order from an uploaded supplier document",
+        consumes: ["multipart/form-data"],
+      },
+    },
+    async (req, reply) => {
+      requireKb();
+      // Uses ARAG document ingestion (KB key) to extract text, then the text
+      // generation gateway to structure it — no NUA/vision dependency.
+      const file = await req.file();
+      if (!file) {
+        return reply.status(400).send({ error: "No file uploaded" });
+      }
+      const allowed = ["image/png", "image/jpeg", "image/webp", "image/gif", "application/pdf"];
+      if (!allowed.includes(file.mimetype)) {
+        return reply
+          .status(415)
+          .send({ error: `Unsupported file type ${file.mimetype}. Upload a PNG/JPG/PDF.` });
+      }
+      const buffer = await file.toBuffer();
+      const r = await wrap(extractPurchaseOrderDraft(buffer, file.mimetype));
+      return r;
+    }
+  );
+
+  // L1 — Duplicate / callback / warranty detection for a work order.
+  app.post(
+    "/similar-work-orders",
+    {
+      schema: {
+        tags: ["AI"],
+        summary: "Flag likely duplicate or callback/warranty jobs at the same site",
+        body: z.object({ workOrderId: z.string().min(1) }),
+      },
+    },
+    async (req) => {
+      requireKb();
+      const { workOrderId } = req.body as { workOrderId: string };
+      const r = await wrap(flagSimilarWorkOrders(workOrderId));
+      if (!r) throw new ApiError(404, "Work order not found");
+      return r;
+    }
+  );
+
+  // L2 — Parts prediction / job kitting from comparable jobs' actual usage.
+  app.post(
+    "/parts-kit",
+    {
+      schema: {
+        tags: ["AI"],
+        summary: "Suggest a parts kit for a work order, grounded in actual usage",
+        body: z.object({ workOrderId: z.string().min(1) }),
+      },
+    },
+    async (req) => {
+      requireKb();
+      const { workOrderId } = req.body as { workOrderId: string };
+      const r = await wrap(suggestPartsKit(workOrderId));
+      if (!r) throw new ApiError(404, "Work order not found");
+      return r;
+    }
+  );
+
+  // L3 — Technician day-plan narrative + clash detection.
+  app.post(
+    "/day-plan",
+    {
+      schema: {
+        tags: ["AI"],
+        summary: "Narrate a technician's day, flag clashes and wasteful travel",
+        body: z.object({
+          employeeId: z.string().min(1),
+          date: z.string().optional(),
+        }),
+      },
+    },
+    async (req) => {
+      requireKb();
+      const { employeeId, date } = req.body as { employeeId: string; date?: string };
+      const r = await wrap(technicianDayPlan(employeeId, date));
+      if (!r) throw new ApiError(404, "Employee not found");
+      return r;
+    }
+  );
+
+  // ── Theme H: work-order lifecycle assists (all take a workOrderId) ──
+  const woBody = z.object({ workOrderId: z.string().min(1) });
+  const woAssists: [string, string, (id: string) => Promise<unknown>][] = [
+    ["/completion-note", "Draft a completion note for a finished job", draftCompletionNote],
+    ["/work-order-timeline", "Narrate a work order's history (handover/dispute)", workOrderTimeline],
+    ["/site-access-briefing", "Assemble a 'before you arrive' site briefing", siteAccessBriefing],
+    ["/time-anomaly", "Flag a job whose logged hours are unusually high", timeEntryAnomaly],
+  ];
+  for (const [path, summary, fn] of woAssists) {
+    app.post(
+      path,
+      { schema: { tags: ["AI"], summary, body: woBody } },
+      async (req) => {
+        requireKb();
+        const { workOrderId } = req.body as { workOrderId: string };
+        const r = await wrap(fn(workOrderId));
+        if (!r) throw new ApiError(404, "Work order not found");
+        return r;
+      }
+    );
+  }
+
+  // K2/K3 + a couple of H — more work-order-scoped assists (same shape).
+  const woAssists2: [string, string, (id: string) => Promise<unknown>][] = [
+    ["/variation-claim", "Draft a variation/additional-works note when actuals exceed the quote", variationClaim],
+    ["/customer-status-update", "Draft a customer-facing job status update", customerStatusUpdate],
+  ];
+  for (const [path, summary, fn] of woAssists2) {
+    app.post(path, { schema: { tags: ["AI"], summary, body: woBody } }, async (req) => {
+      requireKb();
+      const { workOrderId } = req.body as { workOrderId: string };
+      const r = await wrap(fn(workOrderId));
+      if (!r) throw new ApiError(404, "Work order not found");
+      return r;
+    });
+  }
+
+  // Account-scoped assists (I2 account health, K1 proactive maintenance).
+  const acctBody = z.object({ accountId: z.string().min(1) });
+  const acctAssists: [string, string, (id: string) => Promise<unknown>][] = [
+    ["/account-health", "Account health & churn-risk summary", accountHealth],
+    ["/proactive-maintenance", "Suggest proactive maintenance to offer a customer", proactiveMaintenance],
+  ];
+  for (const [path, summary, fn] of acctAssists) {
+    app.post(path, { schema: { tags: ["AI"], summary, body: acctBody } }, async (req) => {
+      requireKb();
+      const { accountId } = req.body as { accountId: string };
+      const r = await wrap(fn(accountId));
+      if (!r) throw new ApiError(404, "Account not found");
+      return r;
+    });
+  }
+
+  // I3 dunning (invoice-scoped, draft only).
+  app.post(
+    "/dunning-draft",
+    { schema: { tags: ["AI"], summary: "Draft an overdue-invoice reminder (draft only)", body: z.object({ invoiceId: z.string().min(1) }) } },
+    async (req) => {
+      requireKb();
+      const { invoiceId } = req.body as { invoiceId: string };
+      const r = await wrap(draftDunning(invoiceId));
+      if (!r) throw new ApiError(404, "Invoice not found");
+      return r;
+    }
+  );
+
+  // Org-wide assists (no body): I1, I4, I5, I6, I7.
+  const orgAssists: [string, string, () => Promise<unknown>][] = [
+    ["/lost-quotes", "Analyse rejected/expired quotes for loss patterns", analyzeLostQuotes],
+    ["/fleet-compliance", "Vehicles with service/registration due soon", () => fleetComplianceDigest()],
+    ["/recurring-preview", "Preview what the next recurring run would create", recurringRunPreview],
+    ["/demand-reorder", "Reorder suggestions weighted by upcoming job demand", demandAwareReorder],
+    ["/skill-gap", "Skill-coverage gaps across open jobs vs active staff", skillGapSignal],
+  ];
+  for (const [path, summary, fn] of orgAssists) {
+    app.post(path, { schema: { tags: ["AI"], summary } }, async () => {
+      requireKb();
+      return wrap(fn());
+    });
+  }
+
+  // ── Themes B/C/D/E/F ──
+  // Org-wide (no body): B3 SLA early-warning, C3 margin insight, F2 exec summary.
+  const orgAssists2: [string, string, () => Promise<unknown>][] = [
+    ["/sla-early-warning", "Jobs approaching an SLA breach + recommended action", () => slaEarlyWarning()],
+    ["/margin-insight", "Where margin is leaking, by job type", marginInsight],
+    ["/exec-summary", "Board-ready monthly operations summary", execSummary],
+  ];
+  for (const [path, summary, fn] of orgAssists2) {
+    app.post(path, { schema: { tags: ["AI"], summary } }, async () => {
+      requireKb();
+      return wrap(fn());
+    });
+  }
+
+  // Quote-scoped: C1 risk check, C2 comms drafting.
+  app.post(
+    "/quote-risk",
+    { schema: { tags: ["AI"], summary: "Flag under/over-pricing on a quote vs comparable jobs", body: z.object({ quoteId: z.string().min(1) }) } },
+    async (req) => {
+      requireKb();
+      const { quoteId } = req.body as { quoteId: string };
+      const r = await wrap(quoteRiskCheck(quoteId));
+      if (!r) throw new ApiError(404, "Quote not found");
+      return r;
+    }
+  );
+  app.post(
+    "/quote-comms",
+    { schema: { tags: ["AI"], summary: "Draft a quote cover note or follow-up (draft only)", body: z.object({ quoteId: z.string().min(1), kind: z.enum(["cover", "followup"]).optional() }) } },
+    async (req) => {
+      requireKb();
+      const { quoteId, kind } = req.body as { quoteId: string; kind?: "cover" | "followup" };
+      const r = await wrap(draftQuoteComms(quoteId, kind));
+      if (!r) throw new ApiError(404, "Quote not found");
+      return r;
+    }
+  );
+
+  // D1 intake triage (free text).
+  app.post(
+    "/triage",
+    { schema: { tags: ["AI"], summary: "Classify an inbound request → jobType/priority/skills/SLA", body: z.object({ request: z.string().min(5).max(2000) }) } },
+    async (req) => {
+      requireKb();
+      const { request } = req.body as { request: string };
+      return wrap(triageRequest(request));
+    }
+  );
+
+  // D3 safety pre-flight (work-order scoped).
+  app.post(
+    "/safety-preflight",
+    { schema: { tags: ["AI"], summary: "Safety controls for a job + clearance check on the assigned tech", body: z.object({ workOrderId: z.string().min(1) }) } },
+    async (req) => {
+      requireKb();
+      const { workOrderId } = req.body as { workOrderId: string };
+      const r = await wrap(safetyPreflight(workOrderId));
+      if (!r) throw new ApiError(404, "Work order not found");
+      return r;
+    }
+  );
+
+  // E2 recurring suggester (account-scoped).
+  app.post(
+    "/recurring-suggest",
+    { schema: { tags: ["AI"], summary: "Propose a recurring plan from an account's job history", body: z.object({ accountId: z.string().min(1) }) } },
+    async (req) => {
+      requireKb();
+      const { accountId } = req.body as { accountId: string };
+      const r = await wrap(recurringSuggester(accountId));
+      if (!r) throw new ApiError(404, "Account not found");
+      return r;
+    }
+  );
+
+  // F3 audit assistant (NL question over the audit log).
+  app.post(
+    "/audit-assistant",
+    { schema: { tags: ["AI"], summary: "Ask a natural-language question over the audit log", body: z.object({ question: z.string().min(3).max(500) }) } },
+    async (req) => {
+      requireKb();
+      const { question } = req.body as { question: string };
+      return wrap(auditAssistant(question));
     }
   );
 }

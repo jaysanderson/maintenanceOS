@@ -5,6 +5,14 @@
 export interface AragConfig {
   baseUrl: string;
   apiKey: string;
+  /**
+   * NUA (Nuclia Understanding API) key — a separate, account-level
+   * credential required by the OpenAI-compatible `/predict/compat/*`
+   * endpoints (the KB service-account key gets 403 `PredictPublic` there).
+   * Generated in the ARAG dashboard → NUA Keys. Optional: only the vision
+   * extraction path needs it.
+   */
+  nuaKey?: string;
   timeoutMs?: number;
   maxRetries?: number;
 }
@@ -173,6 +181,27 @@ export interface AragPredictChatRequest {
   model?: string;
   /** Optional system prompt (in addition to queryContext). */
   systemPrompt?: string;
+}
+
+/**
+ * A single-turn vision request against ARAG's OpenAI-compatible endpoint
+ * (`/api/v1/predict/compat/chat/completions`). The image is sent inline as
+ * a base64 data URL in standard OpenAI `image_url` content — used for the
+ * document-extraction (write-path) features.
+ */
+export interface AragVisionRequest {
+  /** Vision-capable compat model id, e.g. `chatgpt-4.1`, `gemini-2.5-flash-image`. */
+  model: string;
+  /** System instruction (e.g. "extract a purchase order as strict JSON"). */
+  system: string;
+  /** The user-side text instruction accompanying the image. */
+  userText: string;
+  /** Base64-encoded file bytes (no data-URL prefix). */
+  imageBase64: string;
+  /** MIME type of the file, e.g. `image/png`, `application/pdf`. */
+  mimeType: string;
+  /** Optional sampling temperature (default left to the model). */
+  temperature?: number;
 }
 
 export type AragErrorKind = 'network' | 'timeout' | 'http' | 'parse' | 'config';
