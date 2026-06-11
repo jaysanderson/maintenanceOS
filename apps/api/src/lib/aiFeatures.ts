@@ -256,6 +256,21 @@ export async function dispatchActions(territory?: string): Promise<{
     { systemPrompt: system }
   );
   const actions = extractJson(raw);
+
+  // Resolve the LLM's work-order numbers + technician names back to ids so the
+  // UI can apply each action (assign) with one click.
+  if (Array.isArray(actions)) {
+    const woByNumber = new Map(openJobs.map((w) => [w.workOrderNumber, w.id]));
+    const techByName = new Map(
+      technicians.map((t) => [`${t.firstName} ${t.lastName}`.toLowerCase(), t.id])
+    );
+    for (const a of actions as Array<Record<string, unknown>>) {
+      const wn = typeof a.workOrder === "string" ? a.workOrder : "";
+      a.workOrderId = woByNumber.get(wn) ?? null;
+      const rt = typeof a.recommendedTechnician === "string" ? a.recommendedTechnician : "";
+      a.recommendedTechnicianId = rt ? techByName.get(rt.toLowerCase()) ?? null : null;
+    }
+  }
   return { actions: actions ?? null, raw: actions ? undefined : raw, context };
 }
 
