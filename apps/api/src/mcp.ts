@@ -77,13 +77,24 @@ export async function mcpPlugin(app: FastifyInstance): Promise<void> {
     handler: async (req: FastifyRequest, reply: FastifyReply) => {
       let bearerToken = extractBearer(req);
 
-      // Public-MCP fallback: when the caller didn't present any token,
-      // check the company setting. If public access is enabled and a
-      // public-user is configured, mint a short-lived JWT for that user
-      // on the fly — the rest of the request then flows through the
-      // normal auth path (so RBAC, audit, etc. all still apply).
-      // Off by default; intended for demos.
-      if (!bearerToken) {
+      // Public-MCP fallback: when public access is enabled, anonymous calls
+      // (and calls carrying a STALE/INVALID JWT — e.g. an ARAG agent's
+      // mcphttp driver with an expired token) are served as the public user.
+      // We mint a fresh short-lived JWT and let the request flow through the
+      // normal auth path (RBAC, audit, etc. still apply). Off by default.
+      //
+      // A present-but-expired bearer would otherwise skip this fallback and
+      // 401 — which is exactly the "MCP: Tool error" the Retrieval Agent hit.
+      const isPat = bearerToken?.startsWith("mos_") ?? false;
+      let staleJwt = false;
+      if (bearerToken && !isPat) {
+        try {
+          (app as unknown as { jwt: { verify: (t: string) => unknown } }).jwt.verify(bearerToken);
+        } catch {
+          staleJwt = true; // expired/invalid JWT — treat as anonymous below
+        }
+      }
+      if (!bearerToken || staleJwt) {
         const pub = await getMcpPublicAccess();
         if (pub.enabled) {
           // Use the configured public user when it resolves to an active
