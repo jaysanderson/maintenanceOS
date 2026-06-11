@@ -592,7 +592,8 @@ export interface DraftPoLine extends ExtractedPoLine {
   matchedItemName: string | null;
   matchedSku: string | null;
   /** "sku" = exact SKU hit, "name" = fuzzy name hit, null = unmatched. */
-  matchBy: "sku" | "name" | null;
+  /** "sku"/"name" = confident exact match; "fuzzy" = partial (confirm); null = none. */
+  matchBy: "sku" | "name" | "fuzzy" | null;
 }
 
 export interface PurchaseOrderDraft {
@@ -748,16 +749,23 @@ export async function extractPurchaseOrderDraft(
       unitCost: num(line.unitCost, 0),
     };
 
+    // 1) exact SKU, 2) exact name, 3) fuzzy contains. Exact matches (1 & 2) are
+    // confident; only fuzzy (3) is flagged for the user to confirm.
     let match = extracted.sku ? bySku.get(extracted.sku.toLowerCase()) : undefined;
     let matchBy: DraftPoLine["matchBy"] = match ? "sku" : null;
     if (!match && extracted.description) {
-      const desc = extracted.description.toLowerCase();
-      match = items.find(
-        (i) =>
-          desc.includes(i.name.toLowerCase()) ||
-          i.name.toLowerCase().includes(desc.split(/[(,\-]/)[0].trim())
-      );
-      if (match) matchBy = "name";
+      const desc = extracted.description.toLowerCase().trim();
+      const exact = items.find((i) => i.name.toLowerCase() === desc);
+      if (exact) {
+        match = exact;
+        matchBy = "name";
+      } else {
+        const head = desc.split(/[(,\-]/)[0].trim();
+        match = items.find(
+          (i) => desc.includes(i.name.toLowerCase()) || i.name.toLowerCase().includes(head)
+        );
+        if (match) matchBy = "fuzzy";
+      }
     }
     return {
       ...extracted,
