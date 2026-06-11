@@ -85,10 +85,21 @@ export async function mcpPlugin(app: FastifyInstance): Promise<void> {
       // Off by default; intended for demos.
       if (!bearerToken) {
         const pub = await getMcpPublicAccess();
-        if (pub.enabled && pub.userId) {
-          const user = await prisma.user.findUnique({
-            where: { id: pub.userId },
-          });
+        if (pub.enabled) {
+          // Use the configured public user when it resolves to an active
+          // account; otherwise fall back to the first active admin/manager.
+          // The fallback keeps public access working after a demo-DB reseed,
+          // which regenerates user ids (stale stored publicUserId).
+          let user =
+            (pub.userId &&
+              (await prisma.user.findUnique({ where: { id: pub.userId } }))) ||
+            null;
+          if (!user || !user.active) {
+            user = await prisma.user.findFirst({
+              where: { active: true, role: { in: ["ADMIN", "MANAGER"] } },
+              orderBy: { createdAt: "asc" },
+            });
+          }
           if (user && user.active) {
             bearerToken = (app as unknown as { jwt: { sign: (p: unknown, o: unknown) => string } }).jwt.sign(
               {

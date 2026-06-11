@@ -84,7 +84,11 @@ export async function getMcpPublicAccess(): Promise<{
     getSetting("mcp.publicAccess"),
     getSetting("mcp.publicUserId"),
   ]);
-  return { enabled: enabled === "true", userId: userId ?? null };
+  // Env default makes public mode survive deploys (the DB setting resets when
+  // the demo DB reseeds). The /mcp handler resolves a fallback admin user when
+  // the stored publicUserId is absent or stale (user ids change on reseed).
+  const envDefault = process.env.MCP_PUBLIC_ACCESS === "true";
+  return { enabled: enabled === "true" || envDefault, userId: userId ?? null };
 }
 
 export async function getGstRate(): Promise<number> {
