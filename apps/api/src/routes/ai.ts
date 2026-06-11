@@ -12,6 +12,7 @@ import { ApiError } from "../lib/errors.js";
 import {
   isConfigured,
   agentConfigured,
+  agent,
   ask,
   find,
   agentAsk,
@@ -324,15 +325,99 @@ export async function aiRoutes(app: FastifyInstance) {
     {
       schema: {
         tags: ["AI"],
-        summary: "Ask a natural-language question over the live operations state",
+        summary: "Ask the operations question via the Retrieval Agent (streamed, live ERP via MCP)",
         body: z.object({ question: z.string().min(3).max(500) }),
       },
     },
-    async (req) => {
+    async (req, reply) => {
       requireKb();
+      if (!agentConfigured()) {
+        throw new ApiError(503, "Retrieval Agent is not configured (set ARAG_AGENT_*)");
+      }
       const { question } = req.body as { question: string };
-      const r = await wrap(opsAssistant(question));
-      return r;
+
+      // Stream the agent's progress to the browser as Server-Sent Events so
+      // the user sees what's happening (the smart agent can take a while).
+      // The `mos` workflow answers from the live ERP via the MaintenanceOS
+      // MCP tools (the `default` workflow is "Do NOT use").
+      reply.hijack();
+      const raw = reply.raw;
+      raw.writeHead(200, {
+        "content-type": "text/event-stream",
+        "cache-control": "no-cache, no-transform",
+        connection: "keep-alive",
+        "x-accel-buffering": "no",
+      });
+      const send = (o: unknown) => raw.write(`data: ${JSON.stringify(o)}\n\n`);
+      const ping = setInterval(() => raw.write(": ping\n\n"), 15000);
+
+      const friendly = (title: string): string => {
+        if (/Planner/i.test(title)) return "Planning the approach…";
+        if (/Execution|Executor/i.test(title)) return "Working through the plan…";
+        if (/MCP:|Tool/i.test(title)) return "Querying the live ERP…";
+        if (/Summarize/i.test(title)) return "Writing the answer…";
+        if (/Context validation/i.test(title)) return "Checking the results…";
+        if (/Plan-execute mode completed/i.test(title)) return "Finalising…";
+        return title;
+      };
+
+      try {
+        send({ type: "progress", message: "Starting the operations agent…" });
+        const res = await agent().interactStream(question, {
+          workflowId: "mos",
+          args: { question },
+        });
+        const body = res.body as ReadableStream<Uint8Array> | null;
+        if (!body) throw new Error("No stream returned by the agent");
+        const reader = body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+        let answer = "";
+        let lastMsg = "";
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const lines = buf.split("\n");
+          buf = lines.pop() ?? "";
+          for (const line of lines) {
+            const t = line.trim().replace(/^data:\s*/, "");
+            if (!t.startsWith("{")) continue;
+            let d: Record<string, unknown>;
+            try {
+              d = JSON.parse(t);
+            } catch {
+              continue;
+            }
+            const step = d.step as { title?: string } | undefined;
+            if (step?.title) {
+              const msg = friendly(step.title);
+              if (msg !== lastMsg) {
+                lastMsg = msg;
+                send({ type: "progress", message: msg });
+              }
+            }
+            const a = d.answer;
+            if (typeof a === "string" && a && a !== "Error in generation" && a !== "Error in context") {
+              answer = a;
+            }
+            if (typeof d.generated_text === "string" && d.generated_text) {
+              answer = d.generated_text;
+            }
+          }
+        }
+        const low = !answer.trim() || isLowConfidenceAnswer(answer);
+        send({
+          type: "answer",
+          text: low ? LOW_CONFIDENCE_MESSAGE : answer,
+          lowConfidence: low,
+        });
+      } catch (e) {
+        send({ type: "error", message: (e as Error).message });
+      } finally {
+        clearInterval(ping);
+        raw.end();
+      }
     }
   );
 

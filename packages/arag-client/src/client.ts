@@ -762,9 +762,10 @@ export class AragAgentClient {
     path: string,
     body?: unknown,
     extraHeaders?: Record<string, string>,
+    timeoutMs?: number,
   ): Promise<Response> {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    const timer = setTimeout(() => controller.abort(), timeoutMs ?? this.timeoutMs);
     try {
       const res = await fetch(`${this.baseUrl}${path}`, {
         method,
@@ -798,6 +799,8 @@ export class AragAgentClient {
       args?: Record<string, unknown>;
       /** Forwarded to drivers (e.g. a MaintenanceOS JWT for an mcphttp driver). */
       forwardHeaders?: Record<string, string>;
+      /** Override the abort timeout — the smart agent can run for a while. */
+      timeoutMs?: number;
     },
   ): Promise<Response> {
     const wf = opts?.workflowId ? `?workflow_id=${encodeURIComponent(opts.workflowId)}` : '';
@@ -806,6 +809,7 @@ export class AragAgentClient {
       this.agentPath(`session/ephemeral${wf}`),
       { question, headers: opts?.forwardHeaders ?? {}, arguments: opts?.args ?? {}, operation: 0 },
       { accept: 'text/event-stream' },
+      opts?.timeoutMs ?? 240_000,
     );
   }
 
