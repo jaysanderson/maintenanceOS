@@ -39,26 +39,6 @@ function cfg(d: unknown): Record<string, unknown> {
   return (o.config as Record<string, unknown>) ?? (d as Record<string, unknown>);
 }
 
-async function mintMosToken(): Promise<string | null> {
-  // A static token for the MaintenanceOS mcphttp driver header. Demo creds;
-  // swap for a long-lived service token in production.
-  const email = process.env.MOS_EMAIL ?? "admin@maintenanceos.com.au";
-  const password = process.env.MOS_PASSWORD ?? "demo1234";
-  const base = MOS_MCP_URL.replace(/\/mcp$/, "");
-  try {
-    const res = await fetch(`${base}/api/auth/login`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ email, password }),
-    });
-    if (!res.ok) return null;
-    const j = (await res.json()) as { token?: string };
-    return j.token ?? null;
-  } catch {
-    return null;
-  }
-}
-
 async function main(): Promise<void> {
   if (!aragAgentConfigured()) {
     console.error("ARAG agent not configured — set ARAG_AGENT_ID / ARAG_AGENT_KEY (+ ARAG_AGENT_BASE_URL) in .env");
@@ -72,17 +52,19 @@ async function main(): Promise<void> {
   const haveKb = drivers.some((d) => d.provider === "nucliadb");
 
   if (!haveMos) {
-    const token = await mintMosToken();
+    // No auth header: the MaintenanceOS /mcp endpoint is public (no-auth) for
+    // this demo, so the driver connects anonymously. (Adding a JWT here was the
+    // original bug — the demo token expired in 12h and every tool call 401'd.)
     await agent.addDriver({
       identifier: "maintenanceos-mcp",
       name: "MaintenanceOS ERP",
       provider: "mcphttp",
       config: {
         uri: MOS_MCP_URL,
-        headers: token ? { authorization: `Bearer ${token}` } : {},
+        headers: {},
       },
     });
-    console.log(`driver mcphttp → ${MOS_MCP_URL} created${token ? " (with auth header)" : " (no token — set MOS_EMAIL/PASSWORD)"}`);
+    console.log(`driver mcphttp → ${MOS_MCP_URL} created (no auth — public demo MCP)`);
   } else {
     console.log("driver maintenanceos-mcp present");
   }
