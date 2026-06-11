@@ -208,10 +208,13 @@ export function ingestAndExtractText(
   buffer: Buffer,
   filename: string,
   contentType: string,
-  opts?: { useVllmStrategy?: boolean }
+  opts?: { useVllmStrategy?: boolean; onPoll?: (elapsedSec: number) => void }
 ): Promise<string> {
   const extractStrategy = opts?.useVllmStrategy ? DOC_EXTRACT_STRATEGY_ID : undefined;
-  return kb().ingestAndExtractText(buffer, filename, contentType, { extractStrategy });
+  return kb().ingestAndExtractText(buffer, filename, contentType, {
+    extractStrategy,
+    onPoll: opts?.onPoll,
+  });
 }
 
 /**

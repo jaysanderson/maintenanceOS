@@ -529,12 +529,19 @@ export class AragClient {
     body: Buffer | Uint8Array,
     filename: string,
     contentType: string,
-    opts?: { pollMs?: number; maxPolls?: number; keep?: boolean; extractStrategy?: string },
+    opts?: {
+      pollMs?: number;
+      maxPolls?: number;
+      keep?: boolean;
+      extractStrategy?: string;
+      /** Called once per poll while waiting for extraction (elapsed seconds). */
+      onPoll?: (elapsedSec: number) => void;
+    },
   ): Promise<string> {
-    const pollMs = opts?.pollMs ?? 4000;
+    const pollMs = opts?.pollMs ?? 3000;
     // VLLM extract strategies take longer (~30–60s) than plain OCR (~6s), so
     // poll generously when a strategy is applied.
-    const maxPolls = opts?.maxPolls ?? (opts?.extractStrategy ? 40 : 20);
+    const maxPolls = opts?.maxPolls ?? (opts?.extractStrategy ? 40 : 25);
     const created = await this.json<{ uuid?: string }>({
       method: 'POST',
       path: this.kbPath(kbId, 'resources'),
@@ -542,12 +549,14 @@ export class AragClient {
     });
     const rid = created.uuid;
     if (!rid) throw new AragError('parse', 'No resource id returned for upload');
+    const start = Date.now();
     try {
       await this.uploadFile(kbId, rid, 'file', body, filename, contentType, opts?.extractStrategy);
       for (let i = 0; i < maxPolls; i++) {
         await sleep(pollMs);
         const text = await this.getExtractedText(kbId, rid);
         if (text.trim().length > 0) return text;
+        opts?.onPoll?.(Math.round((Date.now() - start) / 1000));
       }
       return '';
     } finally {
@@ -662,7 +671,13 @@ export class AragKbClient {
     body: Buffer | Uint8Array,
     filename: string,
     contentType: string,
-    opts?: { pollMs?: number; maxPolls?: number; keep?: boolean; extractStrategy?: string },
+    opts?: {
+      pollMs?: number;
+      maxPolls?: number;
+      keep?: boolean;
+      extractStrategy?: string;
+      onPoll?: (elapsedSec: number) => void;
+    },
   ): Promise<string> {
     return this.client.ingestAndExtractText(this.kbId, body, filename, contentType, opts);
   }

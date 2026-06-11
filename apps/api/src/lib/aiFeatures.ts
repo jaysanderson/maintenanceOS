@@ -626,7 +626,8 @@ const MIME_EXT: Record<string, string> = {
 
 export async function extractPurchaseOrderDraft(
   fileBuffer: Buffer,
-  mimeType: string
+  mimeType: string,
+  onProgress?: (message: string) => void
 ): Promise<{
   draft: PurchaseOrderDraft | null;
   lowConfidence: boolean;
@@ -637,41 +638,60 @@ export async function extractPurchaseOrderDraft(
   // the file, let ARAG extract/OCR its text, then structure that text with the
   // (text-only) generation gateway. ARAG remains the only AI gateway.
   //
-  // Two-pass: fast OCR first (great on text-layer PDFs / clean images, ~6s);
-  // if that yields no usable PO, retry once with the rules-based VLLM extract
-  // strategy (slower but better on hard scans).
+  // Single fast pass (default OCR ~6–30s). The OCR text can be noisy on a
+  // photo/scan, so the prompt is told to tolerate OCR errors. We don't chain a
+  // slow VLLM retry synchronously — that pushed worst-case latency to minutes.
   const ext = MIME_EXT[mimeType] ?? "bin";
   const filename = `purchase-order.${ext}`;
+  const report = onProgress ?? (() => {});
 
-  async function attempt(useVllm: boolean): Promise<Record<string, unknown> | null> {
-    const text = await ingestAndExtractText(fileBuffer, filename, mimeType, { useVllmStrategy: useVllm });
-    if (!text.trim()) return null;
-    const answer = await predictChat(
-      "Extract the purchase order as JSON.",
-      [PO_EXTRACT_SYSTEM, `DOCUMENT TEXT (extracted by ARAG):\n${text}`],
-      { systemPrompt: PO_EXTRACT_SYSTEM }
-    );
-    const p = extractJson(answer) as Record<string, unknown> | null;
-    if (!p || p.notAPurchaseOrder === true || !Array.isArray(p.lines) || p.lines.length === 0) {
-      return null;
-    }
-    return p;
-  }
-
-  let parsed = await attempt(false);
-  // Fallback to the deeper visual extraction only if a strategy is configured.
-  if (!parsed && DOC_EXTRACT_STRATEGY_ID) parsed = await attempt(true);
-
-  if (!parsed) {
+  report("Uploading the document…");
+  const text = await ingestAndExtractText(fileBuffer, filename, mimeType, {
+    onPoll: (sec) => report(`Reading the document… (${sec}s)`),
+  });
+  if (!text.trim()) {
     return {
       draft: null,
       lowConfidence: true,
       message:
-        "Couldn't read a purchase order from this document. Make sure it's a clear " +
-        "supplier PO or order confirmation (a digital PDF works best) and try again.",
+        "Couldn't read any text from this document. Make sure it's a clear supplier " +
+        "PO or order confirmation (a digital PDF reads best) and try again.",
       model: "ingest+extract",
     };
   }
+
+  report("Extracting the purchase order…");
+  const answer = await predictChat(
+    "Extract the purchase order as JSON. The text was OCR'd and may contain minor " +
+      "errors — interpret it sensibly and still extract the order.",
+    [PO_EXTRACT_SYSTEM, `DOCUMENT TEXT (extracted by ARAG):\n${text}`],
+    { systemPrompt: PO_EXTRACT_SYSTEM }
+  );
+  const parsed = extractJson(answer) as Record<string, unknown> | null;
+
+  if (
+    !parsed ||
+    parsed.notAPurchaseOrder === true ||
+    !Array.isArray(parsed.lines) ||
+    parsed.lines.length === 0
+  ) {
+    // Image OCR often reads the header but misses the line-items table; a
+    // text-layer PDF extracts cleanly. Steer the user to the better input.
+    const wasImage = mimeType.startsWith("image/");
+    return {
+      draft: null,
+      lowConfidence: true,
+      message: wasImage
+        ? "Read the document, but couldn't pull the line items from this image — " +
+          "screenshots and photos often lose the table. For best results, upload the " +
+          "original PDF of the purchase order."
+        : "Read the document, but couldn't extract purchase-order line items. Make " +
+          "sure it's a supplier PO or order confirmation and try again.",
+      model: "ingest+extract",
+    };
+  }
+
+  report("Matching to your catalogue…");
 
   // Match supplier by name (exact, then contains either direction).
   const supplierName =

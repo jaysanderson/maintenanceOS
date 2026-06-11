@@ -437,7 +437,8 @@ export async function aiRoutes(app: FastifyInstance) {
     async (req, reply) => {
       requireKb();
       // Uses ARAG document ingestion (KB key) to extract text, then the text
-      // generation gateway to structure it — no NUA/vision dependency.
+      // generation gateway to structure it. Streams progress as SSE because
+      // OCR + structuring can take 20-40s — the user sees each stage.
       const file = await req.file();
       if (!file) {
         return reply.status(400).send({ error: "No file uploaded" });
@@ -449,8 +450,30 @@ export async function aiRoutes(app: FastifyInstance) {
           .send({ error: `Unsupported file type ${file.mimetype}. Upload a PNG/JPG/PDF.` });
       }
       const buffer = await file.toBuffer();
-      const r = await wrap(extractPurchaseOrderDraft(buffer, file.mimetype));
-      return r;
+      const mimetype = file.mimetype;
+
+      reply.hijack();
+      const raw = reply.raw;
+      raw.writeHead(200, {
+        "content-type": "text/event-stream",
+        "cache-control": "no-cache, no-transform",
+        connection: "keep-alive",
+        "x-accel-buffering": "no",
+      });
+      const send = (o: unknown) => raw.write(`data: ${JSON.stringify(o)}\n\n`);
+      const ping = setInterval(() => raw.write(": ping\n\n"), 15000);
+      try {
+        const r = await extractPurchaseOrderDraft(buffer, mimetype, (message) =>
+          send({ type: "progress", message })
+        );
+        send({ type: "result", ...r });
+      } catch (e) {
+        const msg = e instanceof AragError ? `AI gateway error: ${e.message}` : (e as Error).message;
+        send({ type: "error", message: msg });
+      } finally {
+        clearInterval(ping);
+        raw.end();
+      }
     }
   );
 
