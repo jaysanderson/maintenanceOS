@@ -599,12 +599,17 @@ export interface DraftPoLine extends ExtractedPoLine {
 export interface PurchaseOrderDraft {
   supplierName: string | null;
   supplierRef: string | null;
+  /** Buyer's PO number the document references (for 3-way match). */
+  poRef: string | null;
   orderDate: string | null;
   expectedDate: string | null;
   currency: string | null;
   /** Matched supplier in our DB (null → user picks one). */
   matchedSupplierId: string | null;
   matchedSupplierName: string | null;
+  /** Matched Purchase Order in our DB (3-way match; null → user picks/none). */
+  matchedPurchaseOrderId: string | null;
+  matchedPurchaseOrderNumber: string | null;
   lines: DraftPoLine[];
 }
 
@@ -614,11 +619,14 @@ const PO_EXTRACT_SYSTEM =
   "extracted text of a supplier document — a purchase order, order " +
   "confirmation, or a supplier invoice/bill. Extract its contents as " +
   "STRICT JSON only — no prose, no markdown fences. Use this exact shape: " +
-  '{"supplierName": string, "supplierRef": string|null, "orderDate": ' +
-  'string|null, "expectedDate": string|null, "currency": string|null, ' +
-  '"lines": [{"description": string, "sku": string|null, "quantity": ' +
-  'number, "unitCost": number}]}. ' +
-  "supplierRef is the document's own number (PO number or invoice number). " +
+  '{"supplierName": string, "supplierRef": string|null, "poRef": string|null, ' +
+  '"orderDate": string|null, "expectedDate": string|null, "currency": ' +
+  'string|null, "lines": [{"description": string, "sku": string|null, ' +
+  '"quantity": number, "unitCost": number}]}. ' +
+  "supplierRef is the document's own number (the supplier's PO or invoice " +
+  "number). poRef is the BUYER's purchase-order number the document " +
+  "references back to — labels like 'Customer PO', 'Your Order', 'Order No', " +
+  "'PO Number' (e.g. 'PO-2026-0004') — null if none. " +
   "For an invoice, put the invoice date in orderDate and the payment due " +
   "date in expectedDate. " +
   "Dates as ISO yyyy-mm-dd where possible. unitCost is the ex-tax unit " +
@@ -736,6 +744,40 @@ export async function extractPurchaseOrderDraft(
     }
   }
 
+  // 3-way match: link this bill to one of our Purchase Orders. Prefer the PO
+  // number the document references (poRef); otherwise, if the matched supplier
+  // has exactly one still-open PO, suggest that. The user confirms in review.
+  const poRef = typeof parsed.poRef === "string" ? parsed.poRef.trim() : null;
+  let matchedPurchaseOrderId: string | null = null;
+  let matchedPurchaseOrderNumber: string | null = null;
+  if (poRef) {
+    // A referenced PO number is globally unique — match across all POs.
+    const needle = poRef.toLowerCase().replace(/\s+/g, "");
+    const allPos = await prisma.purchaseOrder.findMany({
+      select: { id: true, poNumber: true },
+      orderBy: { createdAt: "desc" },
+    });
+    const hit = allPos.find((p) => {
+      const n = p.poNumber.toLowerCase().replace(/\s+/g, "");
+      return n === needle || n.includes(needle) || needle.includes(n);
+    });
+    if (hit) {
+      matchedPurchaseOrderId = hit.id;
+      matchedPurchaseOrderNumber = hit.poNumber;
+    }
+  }
+  if (!matchedPurchaseOrderId && matchedSupplierId) {
+    // No referenced PO — if this supplier has exactly one still-open PO, suggest it.
+    const open = await prisma.purchaseOrder.findMany({
+      where: { supplierId: matchedSupplierId, status: { notIn: ["RECEIVED", "CANCELLED"] } },
+      select: { id: true, poNumber: true },
+    });
+    if (open.length === 1) {
+      matchedPurchaseOrderId = open[0].id;
+      matchedPurchaseOrderNumber = open[0].poNumber;
+    }
+  }
+
   // Match each line against the inventory catalogue: exact SKU first, then a
   // case-insensitive name contains. Unmatched lines are flagged, not faked.
   const items = await prisma.inventoryItem.findMany({
@@ -785,12 +827,15 @@ export async function extractPurchaseOrderDraft(
       supplierName,
       supplierRef:
         typeof parsed.supplierRef === "string" ? parsed.supplierRef : null,
+      poRef,
       orderDate: typeof parsed.orderDate === "string" ? parsed.orderDate : null,
       expectedDate:
         typeof parsed.expectedDate === "string" ? parsed.expectedDate : null,
       currency: typeof parsed.currency === "string" ? parsed.currency : null,
       matchedSupplierId,
       matchedSupplierName,
+      matchedPurchaseOrderId,
+      matchedPurchaseOrderNumber,
       lines,
     },
     lowConfidence: false,

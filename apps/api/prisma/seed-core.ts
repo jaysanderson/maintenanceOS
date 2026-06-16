@@ -33,6 +33,8 @@ export async function seedDatabase(prisma: PrismaClient) {
   await prisma.recurringPlan.deleteMany();
   await prisma.notification.deleteMany();
   await prisma.emailOutbox.deleteMany();
+  await prisma.supplierBillLine.deleteMany();
+  await prisma.supplierBill.deleteMany();
   await prisma.purchaseOrderLine.deleteMany();
   await prisma.purchaseOrder.deleteMany();
   await prisma.invoice.deleteMany();
@@ -289,6 +291,7 @@ export async function seedDatabase(prisma: PrismaClient) {
   console.log(`Suppliers: ${suppliers.length}`);
 
   // --- Purchase Orders (10) ---
+  const createdPOs: { id: string; supplierId: string }[] = [];
   for (let i = 0; i < 10; i++) {
     const sup = pick(suppliers);
     const lineCount = int(2, 5);
@@ -314,6 +317,7 @@ export async function seedDatabase(prisma: PrismaClient) {
       },
       include: { lines: true },
     });
+    createdPOs.push({ id: po.id, supplierId: sup.id });
     if (status === "RECEIVED" || status === "PART_RECEIVED") {
       for (const line of po.lines) {
         const recvQty = status === "RECEIVED" ? line.quantity : Math.floor(line.quantity / 2);
@@ -342,7 +346,12 @@ export async function seedDatabase(prisma: PrismaClient) {
   // due to demo the overdue styling and the dunning-free AP view.
   const billStatuses = ["DRAFT", "APPROVED", "APPROVED", "PAID", "PAID", "DISPUTED"];
   for (let i = 0; i < 7; i++) {
-    const sup = pick(suppliers);
+    // Most bills are matched (3-way) to one of our POs for that supplier;
+    // the rest are standalone (e.g. ad-hoc charges with no PO).
+    const linkedPo = createdPOs.length > 0 && rnd() < 0.7 ? pick(createdPOs) : null;
+    const sup = linkedPo
+      ? suppliers.find((s) => s.id === linkedPo.supplierId) ?? pick(suppliers)
+      : pick(suppliers);
     const lineCount = int(2, 4);
     const billLines = [];
     for (let l = 0; l < lineCount; l++) {
@@ -379,6 +388,7 @@ export async function seedDatabase(prisma: PrismaClient) {
         billNumber: `BILL-${year}-${pad(i + 1)}`,
         supplierRef: `INV-${int(10000, 99999)}`,
         supplierId: sup.id,
+        purchaseOrderId: linkedPo?.id ?? null,
         status,
         issueDate: issued,
         dueDate: daysFromNow(int(-12, 24)),
