@@ -181,6 +181,7 @@ model InventoryItem {
 
   movements        StockMovement[]
   purchaseOrderLines PurchaseOrderLine[]
+  supplierBillLines  SupplierBillLine[]
 }
 
 model InventoryLocation {
@@ -223,6 +224,7 @@ model Supplier {
   updatedAt    DateTime @updatedAt
 
   purchaseOrders PurchaseOrder[]
+  supplierBills  SupplierBill[]
 }
 
 model PurchaseOrder {
@@ -237,6 +239,7 @@ model PurchaseOrder {
 
   supplier Supplier            @relation(fields: [supplierId], references: [id])
   lines    PurchaseOrderLine[]
+  supplierBills SupplierBill[]
 }
 
 model PurchaseOrderLine {
@@ -250,6 +253,46 @@ model PurchaseOrderLine {
 
   purchaseOrder PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
   inventoryItem InventoryItem @relation(fields: [inventoryItemId], references: [id])
+}
+
+// Accounts-payable: a bill/invoice RECEIVED from a supplier (the money we owe),
+// as opposed to PurchaseOrder (what we ordered) and Invoice (what we bill
+// customers). Created either manually or by AI-extracting an uploaded supplier
+// invoice. Optionally linked to a PurchaseOrder for a light 3-way match.
+model SupplierBill {
+  id              String   @id @default(cuid())
+  billNumber      String   @unique // our internal AP ref, e.g. BILL-2026-0001
+  supplierRef     String? // the supplier's own invoice number from the document
+  supplierId      String
+  purchaseOrderId String? // optional link to the PO this bill is against
+  status          String   @default("DRAFT") // DRAFT, APPROVED, PAID, DISPUTED, VOID
+  issueDate       DateTime? // date on the supplier's invoice
+  dueDate         DateTime?
+  subtotal        Float    @default(0)
+  tax             Float    @default(0)
+  total           Float    @default(0)
+  notes           String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  supplier      Supplier       @relation(fields: [supplierId], references: [id])
+  purchaseOrder PurchaseOrder? @relation(fields: [purchaseOrderId], references: [id])
+  lines         SupplierBillLine[]
+}
+
+model SupplierBillLine {
+  id              String  @id @default(cuid())
+  supplierBillId  String
+  // Nullable: a bill line may be a service/freight/labour charge with no
+  // catalogue item. `description` is always present (the extracted text).
+  inventoryItemId String?
+  description     String
+  quantity        Float
+  unitCost        Float
+  total           Float
+
+  supplierBill  SupplierBill   @relation(fields: [supplierBillId], references: [id], onDelete: Cascade)
+  inventoryItem InventoryItem? @relation(fields: [inventoryItemId], references: [id])
 }
 
 model Invoice {

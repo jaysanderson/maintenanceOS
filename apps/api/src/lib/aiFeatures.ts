@@ -610,17 +610,21 @@ export interface PurchaseOrderDraft {
 
 const PO_EXTRACT_SYSTEM =
   "You are a precise document data-extraction engine for a property " +
-  "maintenance company's purchasing system. You are given the extracted text " +
-  "of a supplier purchase order or order confirmation. Extract its contents as " +
+  "maintenance company's purchasing/payables system. You are given the " +
+  "extracted text of a supplier document — a purchase order, order " +
+  "confirmation, or a supplier invoice/bill. Extract its contents as " +
   "STRICT JSON only — no prose, no markdown fences. Use this exact shape: " +
   '{"supplierName": string, "supplierRef": string|null, "orderDate": ' +
   'string|null, "expectedDate": string|null, "currency": string|null, ' +
   '"lines": [{"description": string, "sku": string|null, "quantity": ' +
   'number, "unitCost": number}]}. ' +
+  "supplierRef is the document's own number (PO number or invoice number). " +
+  "For an invoice, put the invoice date in orderDate and the payment due " +
+  "date in expectedDate. " +
   "Dates as ISO yyyy-mm-dd where possible. unitCost is the ex-tax unit " +
   "price as a number (no currency symbol). If a field is absent use null " +
-  "(or [] for lines). If this document is NOT a purchase order or order " +
-  'confirmation, return {"notAPurchaseOrder": true}.';
+  "(or [] for lines). If this document is NOT a purchase order, order " +
+  'confirmation or supplier invoice/bill, return {"notAPurchaseOrder": true}.';
 
 function num(v: unknown, d = 0): number {
   const n = typeof v === "string" ? Number(v.replace(/[^0-9.-]/g, "")) : Number(v);
@@ -671,7 +675,7 @@ export async function extractPurchaseOrderDraft(
       lowConfidence: true,
       message:
         "Couldn't read any text from this document. Make sure it's a clear supplier " +
-        "PO or order confirmation (a digital PDF reads best) and try again.",
+        "invoice, PO or order confirmation (a digital PDF reads best) and try again.",
       model: "ingest+extract",
     };
   }
@@ -701,8 +705,8 @@ export async function extractPurchaseOrderDraft(
         ? "Read the document, but couldn't pull the line items from this image — " +
           "screenshots and photos often lose the table. For best results, upload the " +
           "original PDF of the purchase order."
-        : "Read the document, but couldn't extract purchase-order line items. Make " +
-          "sure it's a supplier PO or order confirmation and try again.",
+        : "Read the document, but couldn't extract line items. Make " +
+          "sure it's a supplier invoice, PO or order confirmation and try again.",
       model: "ingest+extract",
     };
   }

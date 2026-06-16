@@ -33,6 +33,7 @@ import { quoteRoutes } from "./routes/quotes.js";
 import { inventoryRoutes } from "./routes/inventory.js";
 import { supplierRoutes } from "./routes/suppliers.js";
 import { purchaseOrderRoutes } from "./routes/purchaseOrders.js";
+import { supplierBillRoutes } from "./routes/supplierBills.js";
 import { invoiceRoutes } from "./routes/invoices.js";
 import { vehicleRoutes } from "./routes/vehicles.js";
 import { assetRoutes } from "./routes/assets.js";
@@ -259,6 +260,7 @@ export async function buildApp(): Promise<FastifyInstance> {
     await instance.register(inventoryRoutes, { prefix: "/inventory" });
     await instance.register(supplierRoutes, { prefix: "/suppliers" });
     await instance.register(purchaseOrderRoutes, { prefix: "/purchase-orders" });
+    await instance.register(supplierBillRoutes, { prefix: "/supplier-bills" });
     await instance.register(invoiceRoutes, { prefix: "/invoices" });
     await instance.register(vehicleRoutes, { prefix: "/vehicles" });
     await instance.register(assetRoutes, { prefix: "/assets" });

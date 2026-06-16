@@ -29,3 +29,8 @@ export async function nextInvoiceNumber() {
   const count = await prisma.invoice.count();
   return `INV-${year()}-${pad(count + 1)}`;
 }
+
+export async function nextSupplierBillNumber() {
+  const count = await prisma.supplierBill.count();
+  return `BILL-${year()}-${pad(count + 1)}`;
+}

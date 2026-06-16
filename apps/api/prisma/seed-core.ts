@@ -336,6 +336,61 @@ export async function seedDatabase(prisma: PrismaClient) {
   }
   console.log(`Purchase orders: 10`);
 
+  // --- Supplier Bills / AP (7) ---
+  // Bills RECEIVED from suppliers (money we owe). Some are matched to a
+  // catalogue item, some are pure service/freight charges. A couple are past
+  // due to demo the overdue styling and the dunning-free AP view.
+  const billStatuses = ["DRAFT", "APPROVED", "APPROVED", "PAID", "PAID", "DISPUTED"];
+  for (let i = 0; i < 7; i++) {
+    const sup = pick(suppliers);
+    const lineCount = int(2, 4);
+    const billLines = [];
+    for (let l = 0; l < lineCount; l++) {
+      // ~25% of lines are a non-catalogue service/freight charge.
+      if (rnd() < 0.25) {
+        const qty = 1;
+        const unitCost = int(35, 180);
+        billLines.push({
+          inventoryItemId: null,
+          description: pick(["Freight & handling", "Call-out fee", "Disposal levy", "Restocking charge"]),
+          quantity: qty,
+          unitCost,
+          total: Math.round(qty * unitCost * 100) / 100,
+        });
+      } else {
+        const it = pick(items);
+        const qty = int(3, 24);
+        billLines.push({
+          inventoryItemId: it.id,
+          description: it.name,
+          quantity: qty,
+          unitCost: it.unitCost,
+          total: Math.round(qty * it.unitCost * 100) / 100,
+        });
+      }
+    }
+    const subtotal = Math.round(billLines.reduce((s, l) => s + l.total, 0) * 100) / 100;
+    const tax = Math.round(subtotal * 0.1 * 100) / 100;
+    const total = Math.round((subtotal + tax) * 100) / 100;
+    const status = billStatuses[i % billStatuses.length];
+    const issued = daysFromNow(int(-45, -3));
+    await prisma.supplierBill.create({
+      data: {
+        billNumber: `BILL-${year}-${pad(i + 1)}`,
+        supplierRef: `INV-${int(10000, 99999)}`,
+        supplierId: sup.id,
+        status,
+        issueDate: issued,
+        dueDate: daysFromNow(int(-12, 24)),
+        subtotal,
+        tax,
+        total,
+        lines: { create: billLines },
+      },
+    });
+  }
+  console.log(`Supplier bills: 7`);
+
   // --- Work Orders (120) ---
   const jobTitles = [
     "Repair leaking tap", "Replace damaged door handle", "Patch and paint wall damage",
