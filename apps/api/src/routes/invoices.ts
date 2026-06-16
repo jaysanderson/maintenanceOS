@@ -1,9 +1,9 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { prisma } from "../prisma.js";
-import { notFound, badRequest } from "../lib/errors.js";
+import { notFound } from "../lib/errors.js";
 import { nextInvoiceNumber } from "../lib/numbering.js";
-import { calcInvoiceTotals } from "../lib/costing.js";
+import { calcInvoiceTotals, computeJobCosting, round } from "../lib/costing.js";
 import { INVOICE_STATUSES } from "../lib/enums.js";
 import { getGstRate, getCompanyConfig } from "../lib/config.js";
 import { audit } from "../lib/audit.js";
@@ -112,10 +112,25 @@ export async function invoiceRoutes(app: FastifyInstance) {
     if (!wo) throw notFound("Work order");
     const approved = wo.quotes.find((q) => q.status === "APPROVED");
     const source = approved ?? wo.quotes[0];
-    if (!source) {
-      throw badRequest("No quote found for this work order to invoice from");
+
+    // Prefer the approved/latest quote's subtotal. When the completed job has
+    // no quote, invoice from its actual costing (logged labour + materials)
+    // marked up to a standard margin, so any finished job can still be billed.
+    let subtotal: number;
+    let noteSuffix = "";
+    if (source) {
+      subtotal = source.subtotal;
+    } else {
+      const TARGET_MARGIN = 0.35;
+      const costing = await computeJobCosting(wo.id);
+      const cost = costing?.totalActualCost ?? 0;
+      subtotal =
+        cost > 0
+          ? round(cost / (1 - TARGET_MARGIN))
+          : round((wo.estimatedHours ?? 1) * 120); // floor for a job with no logged costs
+      noteSuffix = " (costed from actuals)";
     }
-    const totals = calcInvoiceTotals(source.subtotal, await getGstRate());
+    const totals = calcInvoiceTotals(subtotal, await getGstRate());
     const issuedAt = new Date();
     const dueAt = new Date(issuedAt.getTime() + 30 * 86400000);
     const invoice = await prisma.invoice.create({
@@ -129,7 +144,7 @@ export async function invoiceRoutes(app: FastifyInstance) {
         total: totals.total,
         issuedAt,
         dueAt,
-        notes: `Generated from ${wo.workOrderNumber}`,
+        notes: `Generated from ${wo.workOrderNumber}${noteSuffix}`,
       },
       include: { account: true, workOrder: true },
     });
