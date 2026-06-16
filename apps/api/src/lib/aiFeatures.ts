@@ -623,6 +623,9 @@ const PO_EXTRACT_SYSTEM =
   '"orderDate": string|null, "expectedDate": string|null, "currency": ' +
   'string|null, "lines": [{"description": string, "sku": string|null, ' +
   '"quantity": number, "unitCost": number}]}. ' +
+  "supplierName is the supplier's trading/brand name as shown prominently in " +
+  "the letterhead (e.g. 'Reece Plumbing'), NOT the legal entity in the fine " +
+  "print (e.g. 'Reece Pty Ltd'). " +
   "supplierRef is the document's own number (the supplier's PO or invoice " +
   "number). poRef is the BUYER's purchase-order number the document " +
   "references back to — labels like 'Customer PO', 'Your Order', 'Order No', " +
@@ -637,6 +640,52 @@ const PO_EXTRACT_SYSTEM =
 function num(v: unknown, d = 0): number {
   const n = typeof v === "string" ? Number(v.replace(/[^0-9.-]/g, "")) : Number(v);
   return Number.isFinite(n) ? n : d;
+}
+
+// Company legal-form / filler words stripped before matching a supplier name,
+// so "Reece Pty Ltd" (legal entity on an invoice) still resolves to our
+// "Reece Plumbing" (trading name in the catalogue).
+const COMPANY_SUFFIXES = new Set([
+  "pty", "ltd", "limited", "llc", "inc", "incorporated", "co", "company",
+  "pl", "group", "australia", "aust", "the",
+]);
+
+export function normalizeCompanyName(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .split(" ")
+    .filter((w) => w && !COMPANY_SUFFIXES.has(w))
+    .join(" ")
+    .trim();
+}
+
+/**
+ * Match an extracted supplier name to one of our suppliers, tolerant of
+ * legal-form noise and word order. Tiered so the most confident hit wins:
+ * raw exact → normalized exact → normalized substring → shared first word.
+ */
+export function matchSupplierName<T extends { id: string; name: string }>(
+  extracted: string,
+  suppliers: T[]
+): T | null {
+  const rawNeedle = extracted.toLowerCase().trim();
+  const needle = normalizeCompanyName(extracted);
+  const needleFirst = needle.split(" ")[0] ?? "";
+  let best: { s: T; score: number } | null = null;
+  for (const s of suppliers) {
+    const raw = s.name.toLowerCase().trim();
+    const norm = normalizeCompanyName(s.name);
+    const first = norm.split(" ")[0] ?? "";
+    let score = 0;
+    if (raw === rawNeedle) score = 100;
+    else if (norm && norm === needle) score = 90;
+    else if (norm && needle && (norm.includes(needle) || needle.includes(norm))) score = 70;
+    else if (needleFirst && needleFirst === first && needleFirst.length >= 3) score = 50;
+    if (score > 0 && (!best || score > best.score)) best = { s, score };
+  }
+  return best?.s ?? null;
 }
 
 /**
@@ -730,14 +779,7 @@ export async function extractPurchaseOrderDraft(
     const suppliers = await prisma.supplier.findMany({
       select: { id: true, name: true },
     });
-    const needle = supplierName.toLowerCase();
-    const hit =
-      suppliers.find((s) => s.name.toLowerCase() === needle) ??
-      suppliers.find(
-        (s) =>
-          s.name.toLowerCase().includes(needle) ||
-          needle.includes(s.name.toLowerCase())
-      );
+    const hit = matchSupplierName(supplierName, suppliers);
     if (hit) {
       matchedSupplierId = hit.id;
       matchedSupplierName = hit.name;
