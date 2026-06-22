@@ -21,6 +21,7 @@
     "arag:provision-agent": "node --env-file-if-exists=.env --import tsx scripts/arag-provision-agent.ts",
     "spike:vision": "node --env-file-if-exists=.env --import tsx scripts/spike-vision-extract.ts",
     "arag:provision-extract": "node --env-file-if-exists=.env --import tsx scripts/arag-provision-extract.ts",
+    "arag:ingest-guide": "node --env-file-if-exists=.env --import tsx scripts/ingest-user-guide.ts",
     "test": "npm run build && vitest run"
   },
   "dependencies": {
