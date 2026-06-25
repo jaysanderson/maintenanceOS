@@ -243,6 +243,19 @@ export async function seedDatabase(prisma: PrismaClient) {
   console.log(`Inventory items: ${items.length}`);
 
   // --- Stock movements: receipt into warehouse, some transfers to vans ---
+  // Lot tracking (UC9): every receipt carries a lot id; consumption later
+  // references one of the item's received lots, enabling forward/backward trace.
+  const skuById = new Map(items.map((it) => [it.id, it.sku]));
+  const lotSeq = new Map<string, number>();
+  const lotsByItemId = new Map<string, string[]>();
+  const makeLot = (itemId: string): string => {
+    const sku = skuById.get(itemId) ?? "ITEM";
+    const n = (lotSeq.get(sku) ?? 0) + 1;
+    lotSeq.set(sku, n);
+    const lot = `LOT-${sku}-${String(n).padStart(3, "0")}`;
+    lotsByItemId.set(itemId, [...(lotsByItemId.get(itemId) ?? []), lot]);
+    return lot;
+  };
   let moveCount = 0;
   for (const item of items) {
     await prisma.stockMovement.create({
@@ -251,6 +264,7 @@ export async function seedDatabase(prisma: PrismaClient) {
         toLocationId: warehouse.id,
         quantity: int(20, 80),
         movementType: "PURCHASE_RECEIPT",
+        lot: makeLot(item.id),
         notes: "Opening stock",
       },
     });
@@ -336,6 +350,7 @@ export async function seedDatabase(prisma: PrismaClient) {
             toLocationId: warehouse.id,
             quantity: recvQty,
             movementType: "PURCHASE_RECEIPT",
+            lot: makeLot(line.inventoryItemId),
             notes: `Received against ${po.poNumber}`,
           },
         });
@@ -583,6 +598,7 @@ export async function seedDatabase(prisma: PrismaClient) {
       const consumeN = int(1, 3);
       for (let c = 0; c < consumeN; c++) {
         const it = pick(items);
+        const itLots = lotsByItemId.get(it.id) ?? [];
         await prisma.stockMovement.create({
           data: {
             inventoryItemId: it.id,
@@ -590,6 +606,7 @@ export async function seedDatabase(prisma: PrismaClient) {
             workOrderId: wo.id,
             quantity: int(1, 5),
             movementType: "CONSUMED_ON_JOB",
+            lot: itLots.length ? pick(itLots) : null,
             notes: `Used on ${wo.workOrderNumber}`,
           },
         });

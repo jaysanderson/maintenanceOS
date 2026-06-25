@@ -8,7 +8,7 @@
  */
 import { prisma } from "../prisma.js";
 import { computeJobCosting, computeStockLevels } from "./costing.js";
-import { getMarginRiskThreshold } from "./config.js";
+import { getMarginRiskThreshold, getCompanyConfig } from "./config.js";
 import {
   predictChat,
   ask,
@@ -2199,4 +2199,307 @@ export async function faultRootCause(workOrderId: string): Promise<{
     citations,
     proposedActions: [{ type: "raise-followup", title: `Investigate recurring ${dominant} at ${site.name}`, jobType: "INSPECTION", accountId: wo.accountId, siteId: wo.siteId }],
   };
+}
+
+// ── UC6 (repackage): Risk watchlist — composite multi-factor account risk ──
+export async function riskWatchlist(): Promise<{
+  accounts: { accountId: string; account: string; score: number; openJobs: number; slaRisk: number; overdueTotal: number; factors: string[] }[];
+  narrative: string;
+}> {
+  const now = new Date();
+  const soon = new Date(now.getTime() + 48 * 3600_000);
+  const accounts = await prisma.account.findMany({
+    include: {
+      workOrders: { select: { status: true, slaDueAt: true } },
+      invoices: { select: { status: true, total: true, dueAt: true } },
+    },
+  });
+  const scored = accounts
+    .map((a) => {
+      const openJobs = a.workOrders.filter((w) => OPEN.includes(w.status)).length;
+      const slaRisk = a.workOrders.filter((w) => OPEN.includes(w.status) && w.slaDueAt && w.slaDueAt <= soon).length;
+      const overdueTotal = Math.round(
+        a.invoices.filter((i) => ["SENT", "OVERDUE"].includes(i.status) && i.dueAt && i.dueAt < now).reduce((s, i) => s + i.total, 0)
+      );
+      const score = Math.round(slaRisk * 5 + openJobs + overdueTotal / 1000);
+      const factors: string[] = [];
+      if (slaRisk) factors.push(`${slaRisk} SLA-risk job${slaRisk > 1 ? "s" : ""}`);
+      if (overdueTotal) factors.push(`$${overdueTotal.toLocaleString()} overdue`);
+      if (openJobs) factors.push(`${openJobs} open job${openJobs > 1 ? "s" : ""}`);
+      return { accountId: a.id, account: a.name, score, openJobs, slaRisk, overdueTotal, factors };
+    })
+    .filter((x) => x.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 10);
+
+  if (scored.length === 0) return { accounts: [], narrative: "No accounts are showing elevated risk right now." };
+  const system =
+    "You are an operations lead. Given accounts ranked by a composite risk score (SLA-risk jobs, overdue $, open jobs), " +
+    "write a 2-3 sentence brief: who needs attention first and why. Cite account names. Use only the data.";
+  const narrative = await predictChat("Summarise the risk watchlist.", [system, `RANKED ACCOUNTS:\n${JSON.stringify(scored)}`], { systemPrompt: system });
+  return { accounts: scored, narrative: narrative.trim() };
+}
+
+// ── UC8 (repackage): Cost-variance exception list (pre-labelled) ───────────
+export async function costExceptions(): Promise<{
+  items: { workOrder: string; account: string; status: string; label: "partial" | "unresolved"; marginPercent: number; varianceFromQuote: number; detail: string }[];
+  scanned: number;
+  narrative: string;
+}> {
+  const wos = await prisma.workOrder.findMany({
+    where: { status: { in: ["COMPLETED", "INVOICED"] } },
+    select: { id: true, workOrderNumber: true, status: true, account: { select: { name: true } } },
+    orderBy: { updatedAt: "desc" },
+    take: 60,
+  });
+  const items: { workOrder: string; account: string; status: string; label: "partial" | "unresolved"; marginPercent: number; varianceFromQuote: number; detail: string }[] = [];
+  for (const w of wos) {
+    const c = await computeJobCosting(w.id);
+    if (!c || c.revenue <= 0) continue;
+    let label: "partial" | "unresolved" | null = null;
+    if (c.marginRisk) label = "unresolved";
+    else if (Math.abs(c.varianceFromQuote) > c.revenue * 0.1) label = "partial";
+    if (!label) continue;
+    items.push({
+      workOrder: w.workOrderNumber, account: w.account.name, status: w.status, label,
+      marginPercent: c.grossMarginPercent, varianceFromQuote: Math.round(c.varianceFromQuote),
+      detail: `margin ${c.grossMarginPercent}% · variance $${Math.round(c.varianceFromQuote)} on $${Math.round(c.revenue)} revenue`,
+    });
+  }
+  items.sort((a, b) => (a.label === b.label ? a.marginPercent - b.marginPercent : a.label === "unresolved" ? -1 : 1));
+
+  let narrative = "No material cost variances on recent completed jobs. 🎉";
+  if (items.length) {
+    const system =
+      "You are a finance controller reviewing completed-job cost variances, pre-labelled unresolved/partial. In 2-3 " +
+      "sentences call out the worst margin leakers and the likely theme (labour overrun, under-quote, materials). " +
+      "Cite WO numbers. Use only the data.";
+    narrative = (await predictChat("Summarise cost exceptions.", [system, `COST EXCEPTIONS:\n${JSON.stringify(items.slice(0, 15))}`], { systemPrompt: system })).trim();
+  }
+  return { items, scanned: wos.length, narrative };
+}
+
+// ── UC2: Service commit-date co-pilot ─────────────────────────────────────
+export async function commitDate(workOrderId: string, targetDateISO?: string): Promise<{
+  workOrder: string; site: string; account: string;
+  parts: { item: string; needed: number; onHand: number; shortfall: number; poEta: string | null }[];
+  bindingConstraint: string;
+  recommendedDate: string | null;
+  targetDate: string | null;
+  narrative: string;
+} | null> {
+  const wo = await prisma.workOrder.findUnique({ where: { id: workOrderId }, include: { site: true, account: true } });
+  if (!wo) return null;
+  const kit = await suggestPartsKit(workOrderId);
+  const stock = await computeStockLevels();
+  const onHandBySku = new Map(stock.map((s) => [s.sku, s.totalQuantity]));
+  const itemIdBySku = new Map(stock.map((s) => [s.sku, s.itemId]));
+  // Earliest open-PO ETA per inventory item.
+  const openPos = await prisma.purchaseOrder.findMany({
+    where: { status: { notIn: ["RECEIVED", "CANCELLED"] } },
+    select: { expectedDate: true, lines: { select: { inventoryItemId: true } } },
+  });
+  const etaByItem = new Map<string, Date>();
+  for (const p of openPos) {
+    if (!p.expectedDate) continue;
+    for (const l of p.lines) {
+      const cur = etaByItem.get(l.inventoryItemId);
+      if (!cur || p.expectedDate < cur) etaByItem.set(l.inventoryItemId, p.expectedDate);
+    }
+  }
+  const parts = (kit?.kit ?? []).map((k) => {
+    const onHand = onHandBySku.get(k.sku) ?? 0;
+    const shortfall = Math.max(0, k.quantity - onHand);
+    const itemId = itemIdBySku.get(k.sku);
+    const eta = shortfall > 0 && itemId ? etaByItem.get(itemId) ?? null : null;
+    return { item: k.name, needed: k.quantity, onHand, shortfall, poEta: eta ? eta.toISOString().slice(0, 10) : null };
+  });
+
+  const short = parts.filter((p) => p.shortfall > 0);
+  const etas = short.map((p) => p.poEta).filter((d): d is string => !!d).sort();
+  const latestEta = etas.length ? etas[etas.length - 1] : null;
+  const leadDays = Math.max(1, Math.ceil((wo.estimatedHours ?? 4) / 8));
+  let recommendedDate: string | null = null;
+  let bindingConstraint: string;
+  if (short.length === 0) {
+    bindingConstraint = "Parts on hand — capacity only.";
+    recommendedDate = new Date(Date.now() + leadDays * 86400000).toISOString().slice(0, 10);
+  } else if (latestEta) {
+    bindingConstraint = `Parts: ${short.map((s) => s.item).join(", ")} — earliest on a PO is ${latestEta}.`;
+    recommendedDate = new Date(new Date(latestEta).getTime() + leadDays * 86400000).toISOString().slice(0, 10);
+  } else {
+    bindingConstraint = `Parts short with no PO on order: ${short.map((s) => s.item).join(", ")} — raise a PO first.`;
+    recommendedDate = null;
+  }
+
+  const system =
+    "You are an inside-sales / planning co-pilot for a property-maintenance company. Given the parts position " +
+    "(on-hand vs needed, PO ETAs) and the binding constraint, state whether the target date is achievable, give the " +
+    "earliest realistic commit date, name the constraint, and offer one alternative (e.g. expedite a PO). 2-4 " +
+    "sentences, concrete. Use only the data.";
+  const narrative = await predictChat(
+    "Can we commit this job by the target date?",
+    [system, `JOB ${wo.workOrderNumber} (${wo.title}) at ${wo.site.name}. TARGET: ${targetDateISO ?? "none given"}. ` +
+      `PARTS:\n${JSON.stringify(parts)}\nBINDING CONSTRAINT: ${bindingConstraint} RECOMMENDED: ${recommendedDate ?? "blocked"}.`],
+    { systemPrompt: system }
+  );
+  return {
+    workOrder: wo.workOrderNumber, site: wo.site.name, account: wo.account.name,
+    parts, bindingConstraint, recommendedDate, targetDate: targetDateISO ?? null, narrative: narrative.trim(),
+  };
+}
+
+// ── UC3: Fleet / asset service co-pilot ───────────────────────────────────
+export async function assetServiceCoPilot(kind: "vehicle" | "asset", id: string, symptom: string): Promise<{
+  subject: { kind: string; name: string; detail: string };
+  dueInfo: string | null;
+  narrative: string;
+  citations: string[];
+} | null> {
+  let name = "";
+  let detail = "";
+  let dueInfo: string | null = null;
+  if (kind === "vehicle") {
+    const v = await prisma.vehicle.findUnique({ where: { id } });
+    if (!v) return null;
+    name = v.name;
+    detail = [v.make, v.model, v.year, `${v.odometer.toLocaleString()} km`].filter(Boolean).join(" · ");
+    const due: string[] = [];
+    if (v.serviceDueAt) due.push(`service due ${v.serviceDueAt.toISOString().slice(0, 10)}`);
+    if (v.registrationDueAt) due.push(`rego due ${v.registrationDueAt.toISOString().slice(0, 10)}`);
+    dueInfo = due.join(" · ") || null;
+  } else {
+    const a = await prisma.asset.findUnique({ where: { id } });
+    if (!a) return null;
+    name = a.name;
+    detail = [a.assetType, a.serialNumber, a.status].filter(Boolean).join(" · ");
+    dueInfo = a.serviceDueAt ? `service due ${a.serviceDueAt.toISOString().slice(0, 10)}` : null;
+  }
+
+  let citations: string[] = [];
+  let kbContext = "";
+  try {
+    const r = await ask({
+      query: `Maintenance and safety guidance for: ${name} ${detail}. Reported symptom: ${symptom}.`,
+      filters: [{ labelset: "doctype", label: "manual" }],
+    });
+    if (r.answer && !isLowConfidenceAnswer(r.answer)) {
+      kbContext = r.answer.trim();
+      citations = (r.citations ?? []).map((c) => c.title);
+    }
+  } catch {
+    /* best-effort */
+  }
+
+  const system =
+    "You are a fleet/equipment service co-pilot for a property-maintenance company. Given an asset/vehicle, its " +
+    "service status, a reported symptom and any relevant manual guidance, give a likely cause, the recommended next " +
+    "step, and whether a service is due. 3-5 sentences, practical. Use only the data; if the manual context is thin, " +
+    "say what to check.";
+  const narrative = await predictChat(
+    "Advise on this asset's symptom and service.",
+    [system, `SUBJECT: ${name} (${detail}). DUE: ${dueInfo ?? "n/a"}. SYMPTOM: ${symptom}.` + (kbContext ? `\n\nMANUAL GUIDANCE:\n${kbContext}` : "")],
+    { systemPrompt: system }
+  );
+  return { subject: { kind, name, detail }, dueInfo, narrative: narrative.trim(), citations };
+}
+
+// ── UC10: Compliance readiness + policy-vs-practice gap ────────────────────
+export async function complianceReadiness(): Promise<{
+  metrics: { invoicesMissingDueDate: number; disputedBillsOpen: number; overdueInvoices: number; auditEntriesRecent: number; gstRatePct: number; marginRiskThresholdPct: number; defaultPaymentTerms: string };
+  narrative: string;
+  citations: string[];
+}> {
+  const now = new Date();
+  const [cfg, invoicesMissingDueDate, disputedBillsOpen, overdueInvoices, auditEntriesRecent] = await Promise.all([
+    getCompanyConfig(),
+    prisma.invoice.count({ where: { dueAt: null, status: { notIn: ["VOID"] } } }),
+    prisma.supplierBill.count({ where: { status: "DISPUTED" } }),
+    prisma.invoice.count({ where: { status: { in: ["SENT", "OVERDUE"] }, dueAt: { lt: now } } }),
+    prisma.auditLog.count({ where: { at: { gte: new Date(now.getTime() - 30 * 86400000) } } }),
+  ]);
+  const metrics = {
+    invoicesMissingDueDate, disputedBillsOpen, overdueInvoices, auditEntriesRecent,
+    gstRatePct: Math.round(cfg.gstRate * 100),
+    marginRiskThresholdPct: Math.round(cfg.marginRiskThreshold * 100),
+    defaultPaymentTerms: cfg.defaultPaymentTerms,
+  };
+
+  let citations: string[] = [];
+  let kbContext = "";
+  try {
+    const r = await ask({
+      query: "Finance policy: payment terms, overdue invoice handling, disputed bills, approval thresholds and required dates.",
+      filters: [{ labelset: "doctype", label: "policy" }],
+    });
+    if (r.answer && !isLowConfidenceAnswer(r.answer)) {
+      kbContext = r.answer.trim();
+      citations = (r.citations ?? []).map((c) => c.title);
+    }
+  } catch {
+    /* best-effort */
+  }
+
+  const system =
+    "You are a compliance officer producing a readiness assessment for a property-maintenance company. Compare the " +
+    "WRITTEN policy (provided) against the LIVE configuration and metrics. Output: a short readiness summary, then " +
+    "bullet the areas that look OK (✅) and any policy-vs-practice GAPS (⚠) — e.g. invoices missing due dates, " +
+    "unresolved disputed bills, overdue backlog. Cite the policy where relevant. Use only the data.";
+  const narrative = await predictChat(
+    "Assess compliance readiness and flag policy-vs-practice gaps.",
+    [system, `LIVE CONFIG + METRICS:\n${JSON.stringify(metrics)}` + (kbContext ? `\n\nWRITTEN POLICY:\n${kbContext}` : "")],
+    { systemPrompt: system }
+  );
+  return { metrics, narrative: narrative.trim(), citations };
+}
+
+// ── UC9: Part / lot trace (forward + backward) ────────────────────────────
+export async function availableLots(limit = 60): Promise<{ lot: string; item: string; consumedOnJobs: number }[]> {
+  const moves = await prisma.stockMovement.findMany({
+    where: { lot: { not: null }, movementType: "CONSUMED_ON_JOB" },
+    include: { inventoryItem: { select: { name: true } } },
+  });
+  const map = new Map<string, { item: string; count: number }>();
+  for (const m of moves) {
+    if (!m.lot) continue;
+    const e = map.get(m.lot) ?? { item: m.inventoryItem?.name ?? "", count: 0 };
+    e.count++;
+    map.set(m.lot, e);
+  }
+  return [...map.entries()]
+    .sort((a, b) => b[1].count - a[1].count)
+    .slice(0, limit)
+    .map(([lot, v]) => ({ lot, item: v.item, consumedOnJobs: v.count }));
+}
+
+export async function lotTrace(lot: string): Promise<{
+  lot: string;
+  item: { sku: string; name: string } | null;
+  received: { date: string; quantity: number; location: string | null; ref: string }[];
+  consumed: { workOrder: string; site: string; account: string; quantity: number; date: string }[];
+  accountsAffected: string[];
+  summary: string;
+} | null> {
+  const moves = await prisma.stockMovement.findMany({
+    where: { lot },
+    include: {
+      inventoryItem: { select: { sku: true, name: true } },
+      toLocation: { select: { name: true } },
+      workOrder: { include: { site: { select: { name: true } }, account: { select: { name: true } } } },
+    },
+    orderBy: { createdAt: "asc" },
+  });
+  if (moves.length === 0) return null;
+  const item = moves[0].inventoryItem ? { sku: moves[0].inventoryItem.sku, name: moves[0].inventoryItem.name } : null;
+  const received = moves
+    .filter((m) => m.movementType === "PURCHASE_RECEIPT")
+    .map((m) => ({ date: m.createdAt.toISOString().slice(0, 10), quantity: m.quantity, location: m.toLocation?.name ?? null, ref: m.notes ?? "" }));
+  const consumed = moves
+    .filter((m) => m.movementType === "CONSUMED_ON_JOB" && m.workOrder)
+    .map((m) => ({ workOrder: m.workOrder!.workOrderNumber, site: m.workOrder!.site.name, account: m.workOrder!.account.name, quantity: m.quantity, date: m.createdAt.toISOString().slice(0, 10) }));
+  const accountsAffected = [...new Set(consumed.map((c) => c.account))];
+  const summary = consumed.length
+    ? `Lot ${lot}${item ? ` (${item.name})` : ""} was received ${received.length} time(s) and consumed on ${consumed.length} job(s) across ${accountsAffected.length} account(s): ${accountsAffected.join(", ")}.`
+    : `Lot ${lot}${item ? ` (${item.name})` : ""} was received but has no recorded consumption.`;
+  return { lot, item, received, consumed, accountsAffected, summary };
 }

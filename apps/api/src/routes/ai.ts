@@ -20,7 +20,7 @@ import {
   LOW_CONFIDENCE_MESSAGE,
   type ErpDoc,
 } from "../lib/arag.js";
-import { generateBriefing, dispatchActions, draftQuote, savePlaybook, opsAssistant, extractPurchaseOrderDraft, flagSimilarWorkOrders, suggestPartsKit, technicianDayPlan, draftCompletionNote, workOrderTimeline, siteAccessBriefing, timeEntryAnomaly, analyzeLostQuotes, accountHealth, draftDunning, fleetComplianceDigest, recurringRunPreview, demandAwareReorder, skillGapSignal, proactiveMaintenance, variationClaim, customerStatusUpdate, slaEarlyWarning, quoteRiskCheck, draftQuoteComms, marginInsight, triageRequest, safetyPreflight, recurringSuggester, execSummary, auditAssistant, financeExceptions, faultRootCause } from "../lib/aiFeatures.js";
+import { generateBriefing, dispatchActions, draftQuote, savePlaybook, opsAssistant, extractPurchaseOrderDraft, flagSimilarWorkOrders, suggestPartsKit, technicianDayPlan, draftCompletionNote, workOrderTimeline, siteAccessBriefing, timeEntryAnomaly, analyzeLostQuotes, accountHealth, draftDunning, fleetComplianceDigest, recurringRunPreview, demandAwareReorder, skillGapSignal, proactiveMaintenance, variationClaim, customerStatusUpdate, slaEarlyWarning, quoteRiskCheck, draftQuoteComms, marginInsight, triageRequest, safetyPreflight, recurringSuggester, execSummary, auditAssistant, financeExceptions, faultRootCause, riskWatchlist, costExceptions, commitDate, assetServiceCoPilot, complianceReadiness, availableLots, lotTrace } from "../lib/aiFeatures.js";
 import { getAiConfidenceThreshold } from "../lib/config.js";
 import { AragError } from "@maintenanceos/arag-client";
 
@@ -649,6 +649,58 @@ export async function aiRoutes(app: FastifyInstance) {
       const { workOrderId } = req.body as { workOrderId: string };
       const r = await wrap(faultRootCause(workOrderId));
       if (!r) throw new ApiError(404, "Work order not found");
+      return r;
+    }
+  );
+
+  // UC6/UC8 repackage + UC10: org-wide analyses (no body).
+  const orgAssists3: [string, string, () => Promise<unknown>][] = [
+    ["/risk-watchlist", "Composite multi-factor account risk watchlist", riskWatchlist],
+    ["/cost-exceptions", "Completed-job cost variances pre-labelled unresolved/partial", costExceptions],
+    ["/compliance-readiness", "Compliance readiness + policy-vs-practice gaps", complianceReadiness],
+  ];
+  for (const [path, summary, fn] of orgAssists3) {
+    app.post(path, { schema: { tags: ["AI"], summary } }, async () => {
+      requireKb();
+      return wrap(fn());
+    });
+  }
+
+  // UC2: service commit-date co-pilot.
+  app.post(
+    "/commit-date",
+    { schema: { tags: ["AI"], summary: "Service commit-date co-pilot for a work order", body: z.object({ workOrderId: z.string().min(1), targetDate: z.string().optional() }) } },
+    async (req) => {
+      requireKb();
+      const { workOrderId, targetDate } = req.body as { workOrderId: string; targetDate?: string };
+      const r = await wrap(commitDate(workOrderId, targetDate));
+      if (!r) throw new ApiError(404, "Work order not found");
+      return r;
+    }
+  );
+
+  // UC3: fleet/asset service co-pilot.
+  app.post(
+    "/asset-service",
+    { schema: { tags: ["AI"], summary: "Fleet/asset service co-pilot", body: z.object({ kind: z.enum(["vehicle", "asset"]), id: z.string().min(1), symptom: z.string().min(1).max(500) }) } },
+    async (req) => {
+      requireKb();
+      const { kind, id, symptom } = req.body as { kind: "vehicle" | "asset"; id: string; symptom: string };
+      const r = await wrap(assetServiceCoPilot(kind, id, symptom));
+      if (!r) throw new ApiError(404, "Asset/vehicle not found");
+      return r;
+    }
+  );
+
+  // UC9: part/lot trace (deterministic — no requireKb).
+  app.post("/lots", { schema: { tags: ["AI"], summary: "List traceable lots (consumed on jobs)" } }, async () => ({ lots: await availableLots() }));
+  app.post(
+    "/lot-trace",
+    { schema: { tags: ["AI"], summary: "Forward + backward trace of a part lot", body: z.object({ lot: z.string().min(1) }) } },
+    async (req) => {
+      const { lot } = req.body as { lot: string };
+      const r = await lotTrace(lot);
+      if (!r) throw new ApiError(404, "Lot not found");
       return r;
     }
   );
