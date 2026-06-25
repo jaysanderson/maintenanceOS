@@ -23,6 +23,7 @@
     "arag:provision-extract": "node --env-file-if-exists=.env --import tsx scripts/arag-provision-extract.ts",
     "arag:ingest-guide": "node --env-file-if-exists=.env --import tsx scripts/ingest-user-guide.ts",
     "arag:ingest-finance-policy": "node --env-file-if-exists=.env --import tsx scripts/ingest-finance-policy.ts",
+    "gen:sample-invoice": "node --import tsx scripts/gen-sample-invoice.ts",
     "test": "npm run build && vitest run"
   },
   "dependencies": {
