@@ -20,7 +20,7 @@ import {
   LOW_CONFIDENCE_MESSAGE,
   type ErpDoc,
 } from "../lib/arag.js";
-import { generateBriefing, dispatchActions, draftQuote, savePlaybook, opsAssistant, extractPurchaseOrderDraft, flagSimilarWorkOrders, suggestPartsKit, technicianDayPlan, draftCompletionNote, workOrderTimeline, siteAccessBriefing, timeEntryAnomaly, analyzeLostQuotes, accountHealth, draftDunning, fleetComplianceDigest, recurringRunPreview, demandAwareReorder, skillGapSignal, proactiveMaintenance, variationClaim, customerStatusUpdate, slaEarlyWarning, quoteRiskCheck, draftQuoteComms, marginInsight, triageRequest, safetyPreflight, recurringSuggester, execSummary, auditAssistant, financeExceptions } from "../lib/aiFeatures.js";
+import { generateBriefing, dispatchActions, draftQuote, savePlaybook, opsAssistant, extractPurchaseOrderDraft, flagSimilarWorkOrders, suggestPartsKit, technicianDayPlan, draftCompletionNote, workOrderTimeline, siteAccessBriefing, timeEntryAnomaly, analyzeLostQuotes, accountHealth, draftDunning, fleetComplianceDigest, recurringRunPreview, demandAwareReorder, skillGapSignal, proactiveMaintenance, variationClaim, customerStatusUpdate, slaEarlyWarning, quoteRiskCheck, draftQuoteComms, marginInsight, triageRequest, safetyPreflight, recurringSuggester, execSummary, auditAssistant, financeExceptions, faultRootCause } from "../lib/aiFeatures.js";
 import { getAiConfidenceThreshold } from "../lib/config.js";
 import { AragError } from "@maintenanceos/arag-client";
 
@@ -638,6 +638,19 @@ export async function aiRoutes(app: FastifyInstance) {
     "/finance-exceptions",
     { schema: { tags: ["AI"], summary: "Scan invoices & supplier bills for exceptions, grouped with proposed fixes" } },
     async () => financeExceptions()
+  );
+
+  // UC1A: recurring-fault / callback root-cause for a work order's site.
+  app.post(
+    "/fault-root-cause",
+    { schema: { tags: ["AI"], summary: "Rank recurring-fault root causes at a work order's site", body: z.object({ workOrderId: z.string().min(1) }) } },
+    async (req) => {
+      requireKb();
+      const { workOrderId } = req.body as { workOrderId: string };
+      const r = await wrap(faultRootCause(workOrderId));
+      if (!r) throw new ApiError(404, "Work order not found");
+      return r;
+    }
   );
 
   // Quote-scoped: C1 risk check, C2 comms drafting.

@@ -2076,3 +2076,127 @@ export async function financeExceptions(): Promise<{
 
   return { groups, scanned: { bills: bills.length, invoices: invoices.length }, policy };
 }
+
+// ── UC1A: Recurring-fault / callback root-cause explainer ─────────────────
+// The OpenEdge "FPY drop explainer" pattern in maintenance clothing: correlate
+// a site's job history (recurring issues, callbacks, labour overruns, parts
+// usage) into ranked root causes with cited evidence, plus a HITL follow-up.
+const FAULT_STOPWORDS = new Set([
+  "the", "a", "an", "and", "or", "for", "to", "of", "at", "on", "in", "repair",
+  "replace", "service", "fix", "check", "inspect", "install", "clean", "make",
+  "safe", "after",
+]);
+function titleKeyword(title: string): string {
+  const w = title.toLowerCase().replace(/[^a-z0-9 ]/g, " ").split(/\s+/).filter((x) => x && !FAULT_STOPWORDS.has(x));
+  return w.slice(0, 2).join(" ") || title.toLowerCase().slice(0, 20);
+}
+
+export async function faultRootCause(workOrderId: string): Promise<{
+  site: { id: string; name: string; account: string };
+  windowDays: number;
+  signals: {
+    totalJobs: number;
+    recurring: { label: string; count: number; jobs: string[] }[];
+    callbacks: { earlier: string; later: string; daysApart: number; about: string }[];
+    overruns: { workOrder: string; estimatedHours: number; actualHours: number }[];
+    topParts: { item: string; qty: number }[];
+  };
+  narrative: string;
+  citations: string[];
+  proposedActions: { type: "raise-followup"; title: string; jobType: string; accountId: string; siteId: string }[];
+} | null> {
+  const wo = await prisma.workOrder.findUnique({
+    where: { id: workOrderId },
+    include: { site: { include: { account: { select: { name: true } } } } },
+  });
+  if (!wo) return null;
+  const windowDays = 365;
+  const since = new Date(Date.now() - windowDays * 86400000);
+  const jobs = await prisma.workOrder.findMany({
+    where: { siteId: wo.siteId, createdAt: { gte: since } },
+    include: {
+      stockMovements: { where: { movementType: "CONSUMED_ON_JOB" }, include: { inventoryItem: { select: { name: true } } } },
+    },
+    orderBy: { createdAt: "asc" },
+  });
+
+  // Group by the issue keyword alone (the same recurring issue can carry
+  // different job types), so e.g. three "fence panel" visits cluster together.
+  const groups = new Map<string, { label: string; jobs: string[] }>();
+  for (const j of jobs) {
+    const key = titleKeyword(j.title);
+    const g = groups.get(key) ?? { label: key, jobs: [] };
+    g.jobs.push(j.workOrderNumber);
+    groups.set(key, g);
+  }
+  const recurring = [...groups.values()]
+    .filter((g) => g.jobs.length >= 2)
+    .sort((a, b) => b.jobs.length - a.jobs.length)
+    .map((g) => ({ label: g.label, count: g.jobs.length, jobs: g.jobs.slice(0, 6) }));
+
+  const callbacks: { earlier: string; later: string; daysApart: number; about: string }[] = [];
+  for (let a = 0; a < jobs.length; a++) {
+    for (let b = a + 1; b < jobs.length; b++) {
+      if (titleKeyword(jobs[a].title) === titleKeyword(jobs[b].title)) {
+        const days = Math.round((jobs[b].createdAt.getTime() - jobs[a].createdAt.getTime()) / 86400000);
+        if (days >= 0 && days <= 30) callbacks.push({ earlier: jobs[a].workOrderNumber, later: jobs[b].workOrderNumber, daysApart: days, about: titleKeyword(jobs[a].title) });
+      }
+    }
+  }
+  const overruns = jobs
+    .filter((j) => j.actualHours && j.estimatedHours && j.actualHours > j.estimatedHours * 1.5)
+    .map((j) => ({ workOrder: j.workOrderNumber, estimatedHours: j.estimatedHours!, actualHours: j.actualHours! }))
+    .slice(0, 6);
+  const partMap = new Map<string, number>();
+  for (const j of jobs) for (const m of j.stockMovements) {
+    const n = m.inventoryItem?.name ?? "part";
+    partMap.set(n, (partMap.get(n) ?? 0) + m.quantity);
+  }
+  const topParts = [...partMap.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([item, qty]) => ({ item, qty: Math.round(qty) }));
+
+  const signals = { totalJobs: jobs.length, recurring, callbacks: callbacks.slice(0, 6), overruns, topParts };
+  const site = { id: wo.siteId, name: wo.site.name, account: wo.site.account.name };
+
+  if (recurring.length === 0 && callbacks.length === 0 && overruns.length === 0) {
+    return {
+      site, windowDays, signals,
+      narrative: `No recurring fault pattern stands out at ${site.name} in the last ${windowDays} days (${jobs.length} jobs). Nothing to action.`,
+      citations: [], proposedActions: [],
+    };
+  }
+
+  const dominant = recurring[0]?.label ?? callbacks[0]?.about ?? "";
+  let citations: string[] = [];
+  let kbContext = "";
+  try {
+    const r = await ask({
+      query: `Common root causes and recommended procedure for recurring ${dominant} issues in property maintenance.`,
+      filters: [{ labelset: "doctype", label: "policy" }],
+    });
+    if (r.answer && !isLowConfidenceAnswer(r.answer)) {
+      kbContext = r.answer.trim();
+      citations = (r.citations ?? []).map((c) => c.title);
+    }
+  } catch {
+    /* best-effort */
+  }
+
+  const system =
+    "You are a reliability engineer doing root-cause analysis at one site for a property-maintenance company. " +
+    "Given recurring jobs, callbacks (repeat visits for the same issue), labour overruns and parts usage, rank the " +
+    "2-3 most likely root causes (e.g. material/product defect, workmanship/skill, access/scheduling, asset end-of-life), " +
+    "each with the evidence (cite WO numbers and counts) and a confidence (high/medium/low). End with ONE recommended " +
+    "containment action. Use ONLY the data provided. Markdown bullets, concise.";
+  const narrative = await predictChat(
+    "Explain the recurring fault pattern and rank root causes.",
+    [system, `SITE: ${site.name} (${site.account}). SIGNALS:\n${JSON.stringify(signals)}` + (kbContext ? `\n\nRELEVANT SOP/POLICY:\n${kbContext}` : "")],
+    { systemPrompt: system }
+  );
+
+  return {
+    site, windowDays, signals,
+    narrative: narrative.trim(),
+    citations,
+    proposedActions: [{ type: "raise-followup", title: `Investigate recurring ${dominant} at ${site.name}`, jobType: "INSPECTION", accountId: wo.accountId, siteId: wo.siteId }],
+  };
+}
