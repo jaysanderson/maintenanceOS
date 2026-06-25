@@ -22,6 +22,7 @@
     "spike:vision": "node --env-file-if-exists=.env --import tsx scripts/spike-vision-extract.ts",
     "arag:provision-extract": "node --env-file-if-exists=.env --import tsx scripts/arag-provision-extract.ts",
     "arag:ingest-guide": "node --env-file-if-exists=.env --import tsx scripts/ingest-user-guide.ts",
+    "arag:ingest-finance-policy": "node --env-file-if-exists=.env --import tsx scripts/ingest-finance-policy.ts",
     "test": "npm run build && vitest run"
   },
   "dependencies": {

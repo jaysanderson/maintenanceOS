@@ -20,7 +20,7 @@ import {
   LOW_CONFIDENCE_MESSAGE,
   type ErpDoc,
 } from "../lib/arag.js";
-import { generateBriefing, dispatchActions, draftQuote, savePlaybook, opsAssistant, extractPurchaseOrderDraft, flagSimilarWorkOrders, suggestPartsKit, technicianDayPlan, draftCompletionNote, workOrderTimeline, siteAccessBriefing, timeEntryAnomaly, analyzeLostQuotes, accountHealth, draftDunning, fleetComplianceDigest, recurringRunPreview, demandAwareReorder, skillGapSignal, proactiveMaintenance, variationClaim, customerStatusUpdate, slaEarlyWarning, quoteRiskCheck, draftQuoteComms, marginInsight, triageRequest, safetyPreflight, recurringSuggester, execSummary, auditAssistant } from "../lib/aiFeatures.js";
+import { generateBriefing, dispatchActions, draftQuote, savePlaybook, opsAssistant, extractPurchaseOrderDraft, flagSimilarWorkOrders, suggestPartsKit, technicianDayPlan, draftCompletionNote, workOrderTimeline, siteAccessBriefing, timeEntryAnomaly, analyzeLostQuotes, accountHealth, draftDunning, fleetComplianceDigest, recurringRunPreview, demandAwareReorder, skillGapSignal, proactiveMaintenance, variationClaim, customerStatusUpdate, slaEarlyWarning, quoteRiskCheck, draftQuoteComms, marginInsight, triageRequest, safetyPreflight, recurringSuggester, execSummary, auditAssistant, financeExceptions } from "../lib/aiFeatures.js";
 import { getAiConfidenceThreshold } from "../lib/config.js";
 import { AragError } from "@maintenanceos/arag-client";
 
@@ -631,6 +631,14 @@ export async function aiRoutes(app: FastifyInstance) {
       return wrap(fn());
     });
   }
+
+  // UC1B/UC7: finance exception explainer + auto-fix. No requireKb — the scan
+  // is DB-only; the policy citation is best-effort inside the feature.
+  app.post(
+    "/finance-exceptions",
+    { schema: { tags: ["AI"], summary: "Scan invoices & supplier bills for exceptions, grouped with proposed fixes" } },
+    async () => financeExceptions()
+  );
 
   // Quote-scoped: C1 risk check, C2 comms drafting.
   app.post(

@@ -1932,3 +1932,147 @@ export async function auditAssistant(question: string): Promise<{ answer: string
   const lowConfidence = isLowConfidenceAnswer(answer);
   return { answer: lowConfidence ? LOW_CONFIDENCE_MESSAGE : answer, lowConfidence, entriesScanned: entries.length };
 }
+
+// ── UC1B / UC7: Finance exception explainer + auto-fix ────────────────────
+// Scans supplier bills (AP) and customer invoices (AR) for posting/match
+// exceptions, groups them by root cause, explains each in plain language, and
+// — where unambiguous — proposes a concrete HITL fix (e.g. link a bill to the
+// single matching PO). The governing AP/AR rules are cited from the KB finance
+// policy (doctype=policy). Detection is deterministic; only the policy citation
+// uses the AI gateway, so the scan still works if the KB is unavailable.
+
+const PO_MATCH_TOL_ABS = 50; // $ tolerance for 3-way match
+const PO_MATCH_TOL_PCT = 0.02; // 2% tolerance
+
+export interface FinanceExceptionItem {
+  type: "bill" | "invoice";
+  id: string;
+  ref: string;
+  party: string;
+  detail: string;
+  /** A concrete, unambiguous HITL fix, or null when judgement is needed. */
+  fix: { action: "link-po"; purchaseOrderId: string; poNumber: string } | null;
+}
+export interface FinanceExceptionGroup {
+  kind: string;
+  title: string;
+  severity: "high" | "medium" | "low";
+  explanation: string;
+  items: FinanceExceptionItem[];
+}
+
+export async function financeExceptions(): Promise<{
+  groups: FinanceExceptionGroup[];
+  scanned: { bills: number; invoices: number };
+  policy: { answer: string; citations: string[] } | null;
+}> {
+  const now = new Date();
+  const bills = await prisma.supplierBill.findMany({
+    include: {
+      supplier: { select: { name: true } },
+      purchaseOrder: { select: { id: true, poNumber: true, lines: { select: { total: true } } } },
+    },
+    orderBy: { createdAt: "desc" },
+  });
+  const invoices = await prisma.invoice.findMany({
+    include: { account: { select: { name: true } } },
+    orderBy: { createdAt: "desc" },
+  });
+  const openPos = await prisma.purchaseOrder.findMany({
+    where: { status: { notIn: ["CANCELLED"] } },
+    select: { id: true, poNumber: true, supplierId: true, lines: { select: { total: true } } },
+  });
+  const sumTotal = (lines: { total: number }[]) =>
+    Math.round(lines.reduce((s, l) => s + l.total, 0) * 100) / 100;
+  const tol = (base: number) => Math.max(PO_MATCH_TOL_ABS, base * PO_MATCH_TOL_PCT);
+
+  const byKind = new Map<string, FinanceExceptionItem[]>();
+  const push = (kind: string, item: FinanceExceptionItem) => {
+    const arr = byKind.get(kind) ?? [];
+    arr.push(item);
+    byKind.set(kind, arr);
+  };
+
+  for (const b of bills) {
+    if (b.status === "VOID") continue;
+    const party = b.supplier?.name ?? "—";
+    // Compare ex-tax amounts: a bill's subtotal vs the PO's (ex-tax) line total.
+    if (b.purchaseOrder) {
+      const pot = sumTotal(b.purchaseOrder.lines);
+      const diff = Math.round((b.subtotal - pot) * 100) / 100;
+      if (Math.abs(diff) > tol(pot)) {
+        push("po-total-mismatch", {
+          type: "bill", id: b.id, ref: b.billNumber, party,
+          detail: `Bill ex-tax $${b.subtotal.toFixed(2)} vs PO ${b.purchaseOrder.poNumber} $${pot.toFixed(2)} (${diff >= 0 ? "+" : ""}${diff.toFixed(2)})`,
+          fix: null,
+        });
+      }
+    } else {
+      const matches = openPos
+        .filter((p) => p.supplierId === b.supplierId)
+        .map((p) => ({ p, pot: sumTotal(p.lines) }))
+        .filter(({ pot }) => Math.abs(b.subtotal - pot) <= tol(pot));
+      const fix = matches.length === 1
+        ? { action: "link-po" as const, purchaseOrderId: matches[0].p.id, poNumber: matches[0].p.poNumber }
+        : null;
+      push("no-po-link", {
+        type: "bill", id: b.id, ref: b.billNumber, party,
+        detail: fix ? `No PO linked — matches ${fix.poNumber}` : "No PO linked (no single matching PO)",
+        fix,
+      });
+    }
+    if (b.status === "DISPUTED") {
+      push("disputed-bill", { type: "bill", id: b.id, ref: b.billNumber, party, detail: "Bill is DISPUTED", fix: null });
+    }
+    if (b.dueDate && b.dueDate < now && b.status !== "PAID") {
+      const days = Math.floor((now.getTime() - b.dueDate.getTime()) / 86400000);
+      push("overdue-bill", { type: "bill", id: b.id, ref: b.billNumber, party, detail: `${days}d overdue ($${b.total.toFixed(2)})`, fix: null });
+    }
+    if (!b.issueDate || !b.dueDate) {
+      push("missing-dates", { type: "bill", id: b.id, ref: b.billNumber, party, detail: `Missing ${!b.issueDate ? "issue" : "due"} date`, fix: null });
+    }
+  }
+
+  for (const inv of invoices) {
+    if (inv.status === "VOID" || inv.status === "PAID") continue;
+    const party = inv.account?.name ?? "—";
+    if (inv.dueAt && inv.dueAt < now && ["SENT", "OVERDUE"].includes(inv.status)) {
+      const days = Math.floor((now.getTime() - inv.dueAt.getTime()) / 86400000);
+      push("overdue-invoice", { type: "invoice", id: inv.id, ref: inv.invoiceNumber, party, detail: `${days}d overdue ($${inv.total.toFixed(2)})`, fix: null });
+    }
+    if (!inv.dueAt) {
+      push("missing-dates", { type: "invoice", id: inv.id, ref: inv.invoiceNumber, party, detail: "Missing due date", fix: null });
+    }
+  }
+
+  const META: Record<string, Omit<FinanceExceptionGroup, "kind" | "items">> = {
+    "po-total-mismatch": { title: "Bill ≠ PO total (3-way match)", severity: "high", explanation: "These supplier bills don't match their linked purchase-order total beyond tolerance. Per AP policy a 3-way-match variance over tolerance must be reviewed (and a supplier query raised) before the bill is approved for payment." },
+    "disputed-bill": { title: "Disputed supplier bills", severity: "high", explanation: "These bills are marked DISPUTED. AP policy requires the dispute to be resolved (or a credit received) before approval — do not pay a disputed bill." },
+    "overdue-invoice": { title: "Overdue customer invoices", severity: "high", explanation: "These customer invoices are past due. AR policy: send an escalating reminder and follow up; consider holding further work for chronic non-payers." },
+    "overdue-bill": { title: "Overdue supplier bills", severity: "high", explanation: "These bills are past their due date — pay or query to avoid supplier holds and late fees." },
+    "no-po-link": { title: "Bill not linked to a PO", severity: "medium", explanation: "These bills aren't linked to a purchase order, so they can't be 3-way matched. Where a single matching open PO exists, link it; otherwise confirm it's an approved non-PO charge." },
+    "missing-dates": { title: "Missing issue/due dates", severity: "low", explanation: "These records are missing an issue or due date, which breaks ageing and payment scheduling. Add the dates from the source document." },
+  };
+  const order = ["po-total-mismatch", "disputed-bill", "overdue-invoice", "overdue-bill", "no-po-link", "missing-dates"];
+  const groups: FinanceExceptionGroup[] = order
+    .filter((k) => byKind.has(k))
+    .map((k) => ({ kind: k, ...META[k], items: byKind.get(k)! }));
+
+  let policy: { answer: string; citations: string[] } | null = null;
+  if (groups.length > 0) {
+    try {
+      const r = await ask({
+        query:
+          "Accounts payable and receivable exception handling: 3-way match tolerance, disputed supplier bills, overdue invoices, and approval thresholds.",
+        filters: [{ labelset: "doctype", label: "policy" }],
+      });
+      if (r.answer && !isLowConfidenceAnswer(r.answer)) {
+        policy = { answer: r.answer.trim(), citations: (r.citations ?? []).map((c) => c.title) };
+      }
+    } catch {
+      /* KB optional — scan still returns */
+    }
+  }
+
+  return { groups, scanned: { bills: bills.length, invoices: invoices.length }, policy };
+}

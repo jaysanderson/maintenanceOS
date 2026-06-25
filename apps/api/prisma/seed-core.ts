@@ -291,7 +291,12 @@ export async function seedDatabase(prisma: PrismaClient) {
   console.log(`Suppliers: ${suppliers.length}`);
 
   // --- Purchase Orders (10) ---
-  const createdPOs: { id: string; supplierId: string }[] = [];
+  const itemName = new Map(items.map((it) => [it.id, it.name]));
+  const createdPOs: {
+    id: string;
+    supplierId: string;
+    lines: { inventoryItemId: string; name: string; quantity: number; unitCost: number; total: number }[];
+  }[] = [];
   for (let i = 0; i < 10; i++) {
     const sup = pick(suppliers);
     const lineCount = int(2, 5);
@@ -317,7 +322,11 @@ export async function seedDatabase(prisma: PrismaClient) {
       },
       include: { lines: true },
     });
-    createdPOs.push({ id: po.id, supplierId: sup.id });
+    createdPOs.push({
+      id: po.id,
+      supplierId: sup.id,
+      lines: lines.map((l) => ({ ...l, name: itemName.get(l.inventoryItemId) ?? "Item" })),
+    });
     if (status === "RECEIVED" || status === "PART_RECEIVED") {
       for (const line of po.lines) {
         const recvQty = status === "RECEIVED" ? line.quantity : Math.floor(line.quantity / 2);
@@ -346,36 +355,40 @@ export async function seedDatabase(prisma: PrismaClient) {
   // due to demo the overdue styling and the dunning-free AP view.
   const billStatuses = ["DRAFT", "APPROVED", "APPROVED", "PAID", "PAID", "DISPUTED"];
   for (let i = 0; i < 7; i++) {
-    // Most bills are matched (3-way) to one of our POs for that supplier;
-    // the rest are standalone (e.g. ad-hoc charges with no PO).
-    const linkedPo = createdPOs.length > 0 && rnd() < 0.7 ? pick(createdPOs) : null;
+    // Bills 0 & 1 are deliberately PO-linked (0 matches cleanly, 1 is over-billed
+    // to demo a 3-way-match exception); the rest are ~60% linked, else standalone.
+    const forceLink = i <= 1 && createdPOs.length > 0;
+    const linkedPo = forceLink
+      ? pick(createdPOs)
+      : createdPOs.length > 0 && rnd() < 0.6
+        ? pick(createdPOs)
+        : null;
     const sup = linkedPo
       ? suppliers.find((s) => s.id === linkedPo.supplierId) ?? pick(suppliers)
       : pick(suppliers);
-    const lineCount = int(2, 4);
-    const billLines = [];
-    for (let l = 0; l < lineCount; l++) {
-      // ~25% of lines are a non-catalogue service/freight charge.
-      if (rnd() < 0.25) {
-        const qty = 1;
-        const unitCost = int(35, 180);
-        billLines.push({
-          inventoryItemId: null,
-          description: pick(["Freight & handling", "Call-out fee", "Disposal levy", "Restocking charge"]),
-          quantity: qty,
-          unitCost,
-          total: Math.round(qty * unitCost * 100) / 100,
-        });
-      } else {
-        const it = pick(items);
-        const qty = int(3, 24);
-        billLines.push({
-          inventoryItemId: it.id,
-          description: it.name,
-          quantity: qty,
-          unitCost: it.unitCost,
-          total: Math.round(qty * it.unitCost * 100) / 100,
-        });
+    type BillLine = { inventoryItemId: string | null; description: string; quantity: number; unitCost: number; total: number };
+    const billLines: BillLine[] = [];
+    if (linkedPo) {
+      // Mirror the PO lines so the bill's ex-tax subtotal == the PO total (a clean 3-way match).
+      for (const l of linkedPo.lines) {
+        billLines.push({ inventoryItemId: l.inventoryItemId, description: l.name, quantity: l.quantity, unitCost: l.unitCost, total: l.total });
+      }
+      // Bill 1: add an unapproved surcharge that pushes it over tolerance.
+      if (i === 1) {
+        billLines.push({ inventoryItemId: null, description: "Unapproved delivery surcharge", quantity: 1, unitCost: 280, total: 280 });
+      }
+    } else {
+      const lineCount = int(2, 4);
+      for (let l = 0; l < lineCount; l++) {
+        if (rnd() < 0.25) {
+          const qty = 1;
+          const unitCost = int(35, 180);
+          billLines.push({ inventoryItemId: null, description: pick(["Freight & handling", "Call-out fee", "Disposal levy", "Restocking charge"]), quantity: qty, unitCost, total: Math.round(qty * unitCost * 100) / 100 });
+        } else {
+          const it = pick(items);
+          const qty = int(3, 24);
+          billLines.push({ inventoryItemId: it.id, description: it.name, quantity: qty, unitCost: it.unitCost, total: Math.round(qty * it.unitCost * 100) / 100 });
+        }
       }
     }
     const subtotal = Math.round(billLines.reduce((s, l) => s + l.total, 0) * 100) / 100;

@@ -33,6 +33,7 @@ const listQuery = z.object({ status: z.string().optional() });
 const updateSchema = z.object({
   status: z.enum(["DRAFT", "APPROVED", "PAID", "DISPUTED", "VOID"]).optional(),
   supplierRef: z.string().optional().nullable(),
+  purchaseOrderId: z.string().optional().nullable(),
   issueDate: z.coerce.date().optional().nullable(),
   dueDate: z.coerce.date().optional().nullable(),
   notes: z.string().optional().nullable(),
