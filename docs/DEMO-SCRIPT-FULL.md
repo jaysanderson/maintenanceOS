@@ -21,6 +21,25 @@ all 45 features and was green when this was written.
 > the watchlist, which lot traces, the recommended commit date logic) are
 > deterministic from the seed.
 
+### Cross-cutting UI you can lean on anywhere
+- **"What is this?" popups** — every AI feature has a small **✦ sparkle button**
+  beside its title. Click it for a full-screen explainer: what it does, how it
+  works behind the scenes, why it's valuable, the problem it solves, and the
+  architecture layers it uses. Use it to answer any "what's that?" on the spot —
+  there's one on all 45 features.
+- **Live agent timeline** (Ops Assistant) — you watch the agent's *real* plan and
+  each *live ERP query* stream in ("Reading invoices · status = overdue · LIVE
+  MCP"), with a live query-count + timer. Not a fake spinner — narrate it.
+- **Charts** — AI Insights renders bar charts (account risk scores colour-coded
+  red/amber/blue; margin % by job type), so the numbers are visual, not just text.
+- **Self-driving stations** — the Technician day-plan **pre-fills the busiest
+  tech + date and auto-runs**, so it always shows a live result with no setup.
+
+> **If a card spins and errors with a gateway timeout (408):** that's a transient
+> ARAG hiccup on the narration call, not your data — just click the button again.
+> The figures are computed locally; only the write-up timed out. Warming up in
+> §A makes this rare.
+
 ---
 
 ## Feature coverage map (all 45)
