@@ -89,6 +89,75 @@ function wrap<T>(p: Promise<T>): Promise<T> {
   });
 }
 
+// ── Live-agent progress narration ─────────────────────────────────────────
+// The RAO stream is far richer than a generic spinner: each step carries the
+// actual plan and the real MCP tool calls (tool name + arguments). We turn
+// those into specific, non-repetitive lines ("Reading invoices · status =
+// overdue") so the user watches the agent genuinely work, not a fake spinner.
+type StepEvent = { kind: "plan" | "tool" | "think" | "write"; message: string; tool?: string };
+
+/** "{'query': {'status': 'overdue'}}" → "status = overdue" (best-effort). */
+function summariseToolArgs(raw: string): string {
+  try {
+    const o = JSON.parse(raw.trim().replace(/'/g, '"').replace(/\bNone\b/g, "null").replace(/\bTrue\b/g, "true").replace(/\bFalse\b/g, "false"));
+    const q = (o && typeof o === "object" && "query" in o ? (o as Record<string, unknown>).query : o) as Record<string, unknown> | undefined;
+    if (!q || typeof q !== "object") return "";
+    return Object.entries(q)
+      .filter(([, v]) => v !== null && v !== undefined && v !== "")
+      .slice(0, 3)
+      .map(([k, v]) => `${k.replace(/_/g, " ")} = ${typeof v === "object" ? JSON.stringify(v) : String(v)}`)
+      .join(", ");
+  } catch {
+    return "";
+  }
+}
+
+/** "work_orders_list_work_orders" → "work orders" (underscore-separated). */
+function humaniseResource(tool: string): string {
+  const r = tool.replace(/_(list|get|search|create|update|find|count|by)(_.*)?$/i, "").replace(/_/g, " ").trim();
+  return r || tool.replace(/_/g, " ");
+}
+
+function planSummary(value: string): string {
+  const m = value.match(/Plan:\s*\d+\s*step\(s\):\s*([^\n]+)/i);
+  const text = (m ? m[1] : value.split("\n")[0] ?? "").trim().replace(/\s+/g, " ");
+  // Final planner iterations often have nothing left to plan.
+  if (!text || /no steps/i.test(text) || /^plan:?\s*$/i.test(text)) return "";
+  return text.length > 110 ? text.slice(0, 107) + "…" : text;
+}
+
+/** Humanise one RAO step into a specific progress line, or null to skip noise. */
+function describeAgentStep(step: { module?: string; title?: string; value?: unknown }): StepEvent | null {
+  const title = step.title ?? "";
+  const value = typeof step.value === "string" ? step.value : "";
+  if (step.module === "mcp" || /^MCP:/.test(title)) {
+    const m = value.match(/Used tool:\s*(\S+)\s+with arguments:\s*([\s\S]*)$/i);
+    if (m) {
+      const tool = m[1];
+      const verb = /(^|_)(list|search|get|find|read|count)/i.test(tool)
+        ? "Reading"
+        : /(^|_)create/i.test(tool)
+          ? "Drafting"
+          : /(^|_)(update|set|patch|delete)/i.test(tool)
+            ? "Updating"
+            : "Querying";
+      const filter = summariseToolArgs(m[2]);
+      return { kind: "tool", tool, message: `${verb} ${humaniseResource(tool)}${filter ? ` · ${filter}` : ""}` };
+    }
+    return null; // unparseable tool step — skip rather than show a generic line
+  }
+  if (/Planner/i.test(title)) {
+    const p = value ? planSummary(value) : "";
+    return { kind: "plan", message: p ? `Planning · ${p}` : "Refining the plan" };
+  }
+  if (/Plan-execute mode completed/i.test(title)) return { kind: "think", message: "Connecting the evidence" };
+  if (/Context validation/i.test(title)) return { kind: "think", message: "Double-checking the data" };
+  if (/Summarize/i.test(title)) return { kind: "write", message: "Writing the grounded answer" };
+  // Executor-turn / history-check steps are scaffolding — the tool calls above
+  // are the real story, so we don't emit a line for them.
+  return null;
+}
+
 export async function aiRoutes(app: FastifyInstance) {
   // Lets the UI show/hide AI features without leaking keys.
   app.get(
@@ -358,18 +427,8 @@ export async function aiRoutes(app: FastifyInstance) {
       const send = (o: unknown) => raw.write(`data: ${JSON.stringify(o)}\n\n`);
       const ping = setInterval(() => raw.write(": ping\n\n"), 15000);
 
-      const friendly = (title: string): string => {
-        if (/Planner/i.test(title)) return "Planning the approach…";
-        if (/Execution|Executor/i.test(title)) return "Working through the plan…";
-        if (/MCP:|Tool/i.test(title)) return "Querying the live ERP…";
-        if (/Summarize/i.test(title)) return "Writing the answer…";
-        if (/Context validation/i.test(title)) return "Checking the results…";
-        if (/Plan-execute mode completed/i.test(title)) return "Finalising…";
-        return title;
-      };
-
       try {
-        send({ type: "progress", message: "Starting the operations agent…" });
+        send({ type: "progress", kind: "plan", message: "Connecting to the live operation…" });
         const res = await agent().interactStream(question, {
           workflowId: "mos",
           args: { question },
@@ -396,13 +455,18 @@ export async function aiRoutes(app: FastifyInstance) {
             } catch {
               continue;
             }
-            const step = d.step as { title?: string } | undefined;
+            const step = d.step as { module?: string; title?: string; value?: unknown } | undefined;
             if (step?.title) {
-              const msg = friendly(step.title);
-              if (msg !== lastMsg) {
-                lastMsg = msg;
-                send({ type: "progress", message: msg });
+              const ev = describeAgentStep(step);
+              if (ev && ev.message !== lastMsg) {
+                lastMsg = ev.message;
+                send({ type: "progress", kind: ev.kind, message: ev.message, ...(ev.tool ? { tool: ev.tool } : {}) });
               }
+            }
+            // Token-by-token answer streaming (typewriter finish), when present.
+            const chunk = d.streaming_response_chunk;
+            if (typeof chunk === "string" && chunk) {
+              send({ type: "answer-chunk", text: chunk });
             }
             const a = d.answer;
             if (typeof a === "string" && a && a !== "Error in generation" && a !== "Error in context") {
