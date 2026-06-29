@@ -25,6 +25,7 @@
     "arag:ingest-finance-policy": "node --env-file-if-exists=.env --import tsx scripts/ingest-finance-policy.ts",
     "arag:ingest-manuals": "node --env-file-if-exists=.env --import tsx scripts/ingest-equipment-manuals.ts",
     "gen:sample-invoice": "node --import tsx scripts/gen-sample-invoice.ts",
+    "demo:e2e": "node scripts/demo-e2e.mjs",
     "test": "npm run build && vitest run"
   },
   "dependencies": {

@@ -196,10 +196,17 @@ export async function aiRoutes(app: FastifyInstance) {
       const { jobDescription, jobType } = req.body as z.infer<typeof playbookBody>;
       const filters = jobType ? [{ labelset: "jobType", label: jobType }] : undefined;
       const threshold = await getAiConfidenceThreshold();
-      // Probe with a plain grounded ask first: if ARAG can't ground the job
+      // Probe with a grounded QUESTION first: if ARAG can't ground the job
       // (sentinel) or the score is below threshold, don't fabricate a
       // structured playbook (e.g. "sing at a kids party" at a maintenance co).
-      const probe = await wrap(ask({ query: jobDescription, filters }));
+      // NB: phrase it as a question — a bare job description as the query makes
+      // ARAG emit a non-answer that falsely trips the low-confidence detector.
+      const probe = await wrap(
+        ask({
+          query: `What does the job "${jobDescription}" typically involve — the steps, materials and safety controls — based on comparable jobs and the safety/policy documents?`,
+          filters,
+        })
+      );
       if (isLowConfidenceAnswer(probe.answer) || probe.confidence < threshold) {
         return {
           jobDescription,

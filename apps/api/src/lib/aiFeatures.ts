@@ -1921,9 +1921,11 @@ export async function auditAssistant(question: string): Promise<{ answer: string
     select: { at: true, userEmail: true, action: true, entity: true, summary: true },
   });
   const system =
-    "You are a compliance assistant answering questions about a property-maintenance company's " +
-    "audit log. Answer using ONLY the audit entries provided. Cite actions, users and dates. " +
-    "If the log doesn't contain the answer, say so — never invent activity.";
+    "You are a compliance assistant for a property-maintenance company. The AUDIT ENTRIES below are your complete " +
+    "and authoritative data source — they ARE the recent activity. Always answer the question by summarising and " +
+    "citing the relevant entries (action, user, date). For a broad question, summarise the most recent entries. " +
+    "Never reply that you lack data, context or a knowledge base — the entries are right here. Only say a specific " +
+    "item 'isn't recorded' when it genuinely doesn't appear among the entries; never invent activity.";
   const answer = await predictChat(
     question,
     [system, `AUDIT LOG (most recent ${entries.length} entries):\n${JSON.stringify(entries)}`],
@@ -2333,14 +2335,18 @@ export async function commitDate(workOrderId: string, targetDateISO?: string): P
   }
 
   const system =
-    "You are an inside-sales / planning co-pilot for a property-maintenance company. Given the parts position " +
-    "(on-hand vs needed, PO ETAs) and the binding constraint, state whether the target date is achievable, give the " +
-    "earliest realistic commit date, name the constraint, and offer one alternative (e.g. expedite a PO). 2-4 " +
-    "sentences, concrete. Use only the data.";
+    "You are an inside-sales / planning co-pilot for a property-maintenance company. You are GIVEN the parts " +
+    "position (on-hand vs needed, PO ETAs), the binding constraint and the recommended date — these ARE the facts, " +
+    "always answer from them (never say you lack data). Give the earliest realistic commit date, name the " +
+    "constraint, and offer one alternative (e.g. expedite the PO). If a target date is given, say whether it's " +
+    "achievable. 2-4 concrete sentences.";
+  const planQuestion = targetDateISO
+    ? `Can we commit ${wo.workOrderNumber} by ${targetDateISO}? If not, when?`
+    : `What is the earliest realistic commit date for ${wo.workOrderNumber}, and what's the binding constraint?`;
   const narrative = await predictChat(
-    "Can we commit this job by the target date?",
-    [system, `JOB ${wo.workOrderNumber} (${wo.title}) at ${wo.site.name}. TARGET: ${targetDateISO ?? "none given"}. ` +
-      `PARTS:\n${JSON.stringify(parts)}\nBINDING CONSTRAINT: ${bindingConstraint} RECOMMENDED: ${recommendedDate ?? "blocked"}.`],
+    planQuestion,
+    [system, `JOB ${wo.workOrderNumber} (${wo.title}) at ${wo.site.name}. TARGET DATE: ${targetDateISO ?? "none specified — give the earliest achievable date"}. ` +
+      `PARTS:\n${JSON.stringify(parts)}\nBINDING CONSTRAINT: ${bindingConstraint}\nRECOMMENDED DATE: ${recommendedDate ?? "blocked until a PO is raised"}.`],
     { systemPrompt: system }
   );
   return {
