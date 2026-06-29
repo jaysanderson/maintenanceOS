@@ -96,7 +96,7 @@ export async function seedDatabase(prisma: PrismaClient) {
     { name: "Sunraysia Retirement Living", type: "AGED_CARE", mgr: "Sarah Donnelly" },
     { name: "Spring Gully Shopping Centre", type: "COMMERCIAL", mgr: "Tom Whitfield" },
   ];
-  const accounts = [];
+  const accounts: any[] = [];
   for (const a of accountSeed) {
     accounts.push(
       await prisma.account.create({
@@ -743,6 +743,363 @@ export async function seedDatabase(prisma: PrismaClient) {
     });
   }
   console.log(`Assets: 30`);
+
+  // ============================================================
+  //  DEMO GUARANTEES — deterministic "hero" scenarios so EVERY AI
+  //  feature returns a rich, repeatable result in a live demo.
+  //  The random bulk above gives volume/realism; this block makes
+  //  the specific edge-cases each feature needs guaranteed, not
+  //  probabilistic. Centred on one hero account/site so the SE
+  //  runbook can tell one coherent story.
+  // ============================================================
+  let woN = 120;
+  const nextWO = () => `WO-${year}-${pad(++woN)}`;
+  const daysAgo = (d: number) => daysFromNow(-d);
+
+  // --- G1. Company + finance settings (drives compliance-readiness,
+  //     exec summary company identity, margin/GST maths) ---
+  await prisma.appSetting.createMany({
+    data: [
+      { key: "company.name", value: "MaintenanceOS Field Services" },
+      { key: "company.abn", value: "54 123 456 789" },
+      { key: "company.email", value: "office@maintenanceos.com.au" },
+      { key: "company.phone", value: "03 5444 1200" },
+      { key: "company.address", value: "12 Depot Lane, Bendigo VIC 3550" },
+      { key: "finance.gstRate", value: "0.1" },
+      { key: "finance.marginRiskThreshold", value: "0.25" },
+      { key: "finance.defaultPaymentTerms", value: "NET_30" },
+    ],
+  });
+
+  // --- G2. Time entries for every completed job (fixes time-anomaly,
+  //     enriches completion-note + timeline, makes costing use real
+  //     timesheets). Logged hours mirror actualHours. ---
+  let teCount = 0;
+  for (const w of workOrders) {
+    if (!["COMPLETED", "INVOICED", "CLOSED"].includes(w.status)) continue;
+    if (!w.assignedEmployeeId || !w.actualHours) continue;
+    const total = w.actualHours;
+    const parts = total > 4
+      ? [Math.round((total / 2) * 10) / 10, Math.round((total / 2) * 10) / 10]
+      : [total];
+    let k = 0;
+    for (const h of parts) {
+      await prisma.timeEntry.create({
+        data: {
+          workOrderId: w.id,
+          employeeId: w.assignedEmployeeId,
+          hours: h,
+          date: w.scheduledStart ?? daysAgo(int(1, 20)),
+          notes: k === 0 ? "On-site labour" : "On-site labour (day 2)",
+        },
+      });
+      teCount++; k++;
+    }
+  }
+  // Time-anomaly hero: one REPAIR job logs far more than its peers.
+  const anomalyWO = workOrders.find(
+    (w) => w.jobType === "REPAIR" && w.assignedEmployeeId &&
+      ["COMPLETED", "INVOICED", "CLOSED"].includes(w.status)
+  );
+  if (anomalyWO?.assignedEmployeeId) {
+    await prisma.timeEntry.create({
+      data: {
+        workOrderId: anomalyWO.id,
+        employeeId: anomalyWO.assignedEmployeeId,
+        hours: 12,
+        date: anomalyWO.scheduledStart ?? daysAgo(5),
+        notes: "Extended rework — multiple return visits to diagnose recurring fault",
+      },
+    });
+    teCount++;
+  }
+  console.log(`Time entries: ${teCount}`);
+
+  // --- Hero account/site (the demo centrepiece) ---
+  const heroAccount = accounts[0]; // Bendigo Regional Real Estate
+  const heroSite =
+    sites.find((s) => s.accountId === heroAccount.id) ?? sites[0];
+  const heroTech = technicians[0];
+
+  // --- G3. Recurring tap-leak fault cluster at the hero site.
+  //     One cluster simultaneously powers: fault-root-cause (recurring
+  //     title + callbacks + overrun), parts-kit + commit-date (tap washer
+  //     demand), and lot-trace (LOT-SKU-0001-001 forward/backward). ---
+  const tapWasher = items[0]; // SKU-0001 Tap washer kit
+  // Reset this SKU to a known low on-hand: wipe its movements, receive 7,
+  // the three cluster jobs consume 2 each → net 1 on hand (genuinely short).
+  await prisma.stockMovement.deleteMany({ where: { inventoryItemId: tapWasher.id } });
+  const TAP_LOT = "LOT-SKU-0001-001";
+  await prisma.stockMovement.create({
+    data: {
+      inventoryItemId: tapWasher.id,
+      toLocationId: warehouse.id,
+      quantity: 7,
+      movementType: "PURCHASE_RECEIPT",
+      lot: TAP_LOT,
+      notes: "Opening stock",
+    },
+  });
+  await prisma.inventoryItem.update({
+    where: { id: tapWasher.id },
+    data: { reorderPoint: 12 },
+  });
+  const tapDetail = JOB_DETAILS["Repair leaking tap"];
+  for (let c = 0; c < 3; c++) {
+    const created = daysAgo([32, 21, 9][c]);
+    const est = 1.5;
+    const actual = c === 2 ? 5 : 2; // last visit a big overrun
+    const hero = await prisma.workOrder.create({
+      data: {
+        workOrderNumber: nextWO(),
+        accountId: heroAccount.id,
+        siteId: heroSite.id,
+        title: "Repair leaking tap",
+        description: tapDetail.description,
+        jobType: "REPAIR",
+        priority: "NORMAL",
+        status: "CLOSED",
+        assignedEmployeeId: heroTech.id,
+        createdAt: created,
+        scheduledStart: created,
+        scheduledEnd: new Date(created.getTime() + est * 3600000),
+        slaDueAt: created,
+        estimatedHours: est,
+        actualHours: actual,
+        completionNotes: tapDetail.completion,
+      },
+    });
+    await prisma.stockMovement.create({
+      data: {
+        inventoryItemId: tapWasher.id,
+        fromLocationId: warehouse.id,
+        workOrderId: hero.id,
+        quantity: 2,
+        movementType: "CONSUMED_ON_JOB",
+        lot: TAP_LOT,
+        notes: `Used on ${hero.workOrderNumber}`,
+      },
+    });
+    await prisma.timeEntry.create({
+      data: { workOrderId: hero.id, employeeId: heroTech.id, hours: actual, date: created, notes: "On-site labour" },
+    });
+  }
+
+  // --- G4. Commit-date target: an OPEN tap-repair job. Its parts-kit
+  //     (from the cluster) needs the tap washer, which is short, and an
+  //     open PO supplies it with an ETA → binding-constraint scenario. ---
+  const commitTarget = await prisma.workOrder.create({
+    data: {
+      workOrderNumber: nextWO(),
+      accountId: heroAccount.id,
+      siteId: heroSite.id,
+      title: "Repair leaking tap",
+      description: tapDetail.description,
+      jobType: "REPAIR",
+      priority: "HIGH",
+      status: "WAITING_ON_PARTS",
+      assignedEmployeeId: heroTech.id,
+      slaDueAt: daysFromNow(4),
+      estimatedHours: 2,
+    },
+  });
+  // Open PO that will replenish the tap washer (commit-date ETA source).
+  await prisma.purchaseOrder.create({
+    data: {
+      poNumber: `PO-${year}-${pad(11)}`,
+      supplierId: suppliers[1].id, // Reece Plumbing
+      status: "SENT",
+      expectedDate: daysFromNow(7),
+      lines: {
+        create: [
+          {
+            inventoryItemId: tapWasher.id,
+            quantity: 50,
+            unitCost: tapWasher.unitCost,
+            total: Math.round(50 * tapWasher.unitCost * 100) / 100,
+          },
+        ],
+      },
+    },
+  });
+
+  // --- G4b. A few more genuinely low-stock items so the reorder list has
+  //     depth (write-offs reduce on-hand below the reorder point). ---
+  for (const idx of [4, 14, 20]) {
+    const it = items[idx];
+    const ms = await prisma.stockMovement.findMany({ where: { inventoryItemId: it.id } });
+    let onHand = 0;
+    for (const m of ms) { if (m.toLocationId) onHand += m.quantity; if (m.fromLocationId) onHand -= m.quantity; }
+    const drain = onHand - int(2, 4);
+    if (drain > 0) {
+      await prisma.stockMovement.create({
+        data: {
+          inventoryItemId: it.id,
+          fromLocationId: warehouse.id,
+          quantity: drain,
+          movementType: "ADJUSTMENT",
+          notes: "Stock write-off (damaged / shrinkage)",
+        },
+      });
+    }
+  }
+
+  // --- G5. Maintenance cadence on the hero account (recurring-suggest:
+  //     ≥2 recurring-type jobs with a quarterly rhythm). ---
+  const maintDetail = JOB_DETAILS["Quarterly rental property maintenance"];
+  for (const d of [274, 182, 91]) {
+    const created = daysAgo(d);
+    await prisma.workOrder.create({
+      data: {
+        workOrderNumber: nextWO(),
+        accountId: heroAccount.id,
+        siteId: heroSite.id,
+        title: "Quarterly rental property maintenance",
+        description: maintDetail.description,
+        jobType: "MAINTENANCE",
+        priority: "NORMAL",
+        status: "CLOSED",
+        assignedEmployeeId: heroTech.id,
+        createdAt: created,
+        scheduledStart: created,
+        scheduledEnd: new Date(created.getTime() + 3 * 3600000),
+        slaDueAt: created,
+        estimatedHours: 3,
+        actualHours: 3,
+        completionNotes: maintDetail.completion,
+      },
+    });
+  }
+
+  // --- G6. Recurring plans (recurring-run preview): 3 due now, two at
+  //     the SAME site (batching opportunity), one future. ---
+  const planSite2 = sites.find((s) => s.accountId === heroAccount.id && s.id !== heroSite.id) ?? heroSite;
+  await prisma.recurringPlan.createMany({
+    data: [
+      { accountId: heroAccount.id, siteId: heroSite.id, title: "Quarterly rental property maintenance", jobType: "MAINTENANCE", intervalDays: 90, nextRunAt: daysAgo(2), active: true },
+      { accountId: heroAccount.id, siteId: heroSite.id, title: "Gutter clean & roof check", jobType: "RECURRING_SERVICE", intervalDays: 180, nextRunAt: daysAgo(1), active: true },
+      { accountId: heroAccount.id, siteId: planSite2.id, title: "Smoke alarm compliance check", jobType: "INSPECTION", intervalDays: 365, nextRunAt: daysFromNow(0), active: true },
+      { accountId: accounts[3].id, siteId: (sites.find((s) => s.accountId === accounts[3].id) ?? heroSite).id, title: "Aged-care monthly safety round", jobType: "INSPECTION", intervalDays: 30, nextRunAt: daysFromNow(12), active: true },
+    ],
+  });
+  console.log(`Recurring plans: 4`);
+
+  // --- G7. Lost quotes (lost-quote analysis + account churn signal):
+  //     6 quoted jobs that didn't convert, REPAIR-heavy, higher margins,
+  //     so a clear "we lose high-margin repair quotes" pattern emerges. ---
+  let lostN = 0;
+  const lostSpec: { jobType: string; title: string; status: string; margin: number }[] = [
+    { jobType: "REPAIR", title: "Repair fence panel", status: "REJECTED", margin: 35 },
+    { jobType: "REPAIR", title: "Replace broken window pane", status: "REJECTED", margin: 32 },
+    { jobType: "REPAIR", title: "Service roller door", status: "REJECTED", margin: 30 },
+    { jobType: "REPAIR", title: "Fix sticking internal door", status: "EXPIRED", margin: 28 },
+    { jobType: "MAINTENANCE", title: "Clean gutters", status: "REJECTED", margin: 22 },
+    { jobType: "INSPECTION", title: "School facilities maintenance inspection", status: "EXPIRED", margin: 18 },
+  ];
+  for (const spec of lostSpec) {
+    const acc = pick(accounts);
+    const site = sites.find((s) => s.accountId === acc.id) ?? sites[0];
+    const created = daysAgo(int(20, 70));
+    const wo = await prisma.workOrder.create({
+      data: {
+        workOrderNumber: nextWO(),
+        accountId: acc.id,
+        siteId: site.id,
+        title: spec.title,
+        description: JOB_DETAILS[spec.title]?.description ?? "Quoted works the customer did not proceed with.",
+        jobType: spec.jobType,
+        priority: "NORMAL",
+        status: "QUOTE_REQUIRED",
+        createdAt: created,
+        slaDueAt: daysFromNow(int(5, 20)),
+        estimatedHours: int(2, 6),
+      },
+    });
+    const input = {
+      labourHours: int(3, 9),
+      labourRate: int(95, 130),
+      materialCost: int(40, 350),
+      subcontractorCost: 0,
+      equipmentCost: 0,
+      travelCost: int(20, 80),
+      disposalCost: 0,
+      marginPercent: spec.margin,
+    };
+    const totals = calcQuoteTotals(input);
+    await prisma.quote.create({
+      data: {
+        quoteNumber: `Q-${year}-${pad(20 + ++lostN)}`,
+        workOrderId: wo.id,
+        accountId: acc.id,
+        status: spec.status,
+        ...input,
+        subtotal: totals.subtotal,
+        gst: totals.gst,
+        total: totals.total,
+        validUntil: daysAgo(int(1, 15)),
+        notes: "Customer did not proceed.",
+        createdAt: created,
+      },
+    });
+  }
+  console.log(`Lost quotes: ${lostN}`);
+
+  // --- G8. Skill-coverage gap (skill-gap signal): make one compliance
+  //     skill scarce (1 active holder) and require it on open jobs. ---
+  const rareSkill = skills.find((s) => s.name === "Asbestos awareness");
+  if (rareSkill) {
+    await prisma.employeeSkill.deleteMany({ where: { skillId: rareSkill.id } });
+    await prisma.employeeSkill.create({ data: { employeeId: heroTech.id, skillId: rareSkill.id } });
+    const openForSkill = workOrders
+      .filter((w) => ["NEW", "TRIAGE", "QUOTE_REQUIRED", "AWAITING_APPROVAL", "APPROVED", "SCHEDULED"].includes(w.status))
+      .slice(0, 2);
+    for (const w of openForSkill) {
+      await prisma.workOrderRequiredSkill.create({ data: { workOrderId: w.id, skillId: rareSkill.id } });
+    }
+  }
+
+  // --- G9. SLA early-warning: guarantee ≥2 open jobs inside the 48h
+  //     window (also feeds the briefing + dispatch urgency). ---
+  const openWOs = workOrders.filter(
+    (w) => !["COMPLETED", "INVOICED", "CLOSED", "CANCELLED"].includes(w.status)
+  );
+  if (openWOs[0]) await prisma.workOrder.update({ where: { id: openWOs[0].id }, data: { slaDueAt: daysFromNow(0.5), priority: "URGENT" } });
+  if (openWOs[1]) await prisma.workOrder.update({ where: { id: openWOs[1].id }, data: { slaDueAt: daysFromNow(1.5), priority: "HIGH" } });
+
+  // --- G10. Hero account overdue invoice (tops the risk watchlist:
+  //     open jobs + SLA risk + overdue cash all on one account). ---
+  const heroCompleted = await prisma.workOrder.findFirst({
+    where: { accountId: heroAccount.id, status: "CLOSED" },
+    orderBy: { createdAt: "desc" },
+  });
+  if (heroCompleted) {
+    const issued = daysAgo(62);
+    const inv = calcInvoiceTotals(1850);
+    await prisma.invoice.create({
+      data: {
+        invoiceNumber: `INV-${year}-${pad(90)}`,
+        workOrderId: heroCompleted.id,
+        accountId: heroAccount.id,
+        status: "OVERDUE",
+        subtotal: inv.subtotal,
+        gst: inv.gst,
+        total: inv.total,
+        issuedAt: issued,
+        dueAt: daysAgo(32),
+        notes: `Generated from ${heroCompleted.workOrderNumber}`,
+      },
+    });
+  }
+
+  // --- G11. Fleet: guarantee an overdue-service vehicle (fleet
+  //     compliance + asset-service co-pilot). ---
+  if (vehicles[0]) {
+    await prisma.vehicle.update({
+      where: { id: vehicles[0].id },
+      data: { serviceDueAt: daysAgo(5), registrationDueAt: daysFromNow(9) },
+    });
+  }
+  console.log("Demo guarantees planted.");
 
   // --- Representative audit history (so the demo Audit Log isn't empty) ---
   const adminU = await prisma.user.findFirst({ where: { role: "ADMIN" } });

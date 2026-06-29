@@ -149,3 +149,37 @@ Follow these in order; each maps to a station in `DEMO-SCRIPT.md`.
 - **"Could this run on our ERP?"** Yes — it's three reusable layers (Agentic RAG,
   MCP Server, Retrieval Agent) on top of the existing app; the app isn't
   replaced, it gets a co-pilot.
+
+## I. Guaranteed demo data — what to click for each AI feature
+
+The seed plants **deterministic hero scenarios** so every feature returns a rich
+result every time (no empty cards). The through-line is one hero account:
+**Bendigo Regional Real Estate** (the first account in the list) and its first
+site. If a card ever looks thin, you're on the wrong record — come back here.
+
+| AI feature | Where | Click this (guaranteed) |
+|---|---|---|
+| **Risk watchlist** | AI Insights (top) | **Bendigo Regional Real Estate** tops the list — overdue invoice + open jobs + SLA risk stacked on one account |
+| **Recurring-fault root-cause** | Work Order detail | Open the **"Repair leaking tap"** job at the hero site → 3 prior tap repairs, callbacks within ~10 days, one big labour overrun |
+| **Service commit-date** | Work Order detail | Same open **"Repair leaking tap"** (status *Waiting on parts*) → tap-washer (SKU-0001) is short on hand, **PO-2026-0011** supplies it with an ETA → binding constraint + recommended date |
+| **Part / lot trace** | Inventory (top) | Lot **`LOT-SKU-0001-001`** → received once, consumed on 3 jobs (forward + backward) |
+| **Finance exceptions** | Invoices | **BILL-2026-0002** is over-billed +$280 vs its PO; plus a disputed bill and overdue invoices, grouped by root cause |
+| **Lost-quote analysis** | AI Insights | 6 rejected/expired quotes, REPAIR-heavy with higher margins → "we lose high-margin repair quotes" |
+| **Demand-aware reorder** | AI Insights | 4 low-stock SKUs (0001, 0005, 0015, 0021) below reorder point, weighted by upcoming jobs |
+| **Skill-coverage gaps** | AI Insights | **Asbestos awareness** — 1 active holder, required by open jobs (single point of failure) |
+| **SLA early-warning** | AI Insights | ≥2 open jobs inside the 48h window (one is URGENT) |
+| **Fleet compliance / asset-service co-pilot** | Fleet (top) | **Fleet 1** is overdue for service; add a symptom for the co-pilot (cites the van care notes) |
+| **Recurring-run preview** | AI Insights | 3 plans due now, two at the **same site** → batching tip |
+| **Recurring-plan suggest / account health** | Accounts → Bendigo Regional Real Estate | Quarterly maintenance cadence + overdue cash → proposes a plan, flags churn risk |
+| **Time anomaly / completion note / timeline** | Work Order detail (completed jobs) | Completed jobs now carry real time entries; one REPAIR job logs ~3× its peers (anomaly) |
+| **Cost exceptions / margin insight / exec summary** | AI Insights | Completed jobs are costed from real timesheets; variances pre-labelled Explained / Partial / Unresolved |
+
+### Resetting to this exact state
+- **Fastest (live):** Admin/Manager → **System → Reset demo data** (re-runs the
+  seed against the running DB — same guaranteed scenarios, ~5s).
+- **Full rebuild:** redeploy (`fly deploy … --build-arg WEB_CACHE_BUST=$(date +%s)`)
+  — the DB is seeded into the image, so a deploy reseeds these hero scenarios.
+- **KB refresh (optional):** the policy/safety/manual/user-guide docs persist in
+  the KB across deploys, so KB-grounded citations keep working. To also refresh
+  the ERP-record mirror (for Knowledge Copilot / search over the latest records),
+  run `npm run arag:sync` from `apps/api`.
