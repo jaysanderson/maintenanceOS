@@ -280,6 +280,9 @@ export class AragClient {
     const body: Record<string, unknown> = {
       question: req.question,
       query_context: req.queryContext,
+      // ARAG requires `user_id` on predict/chat — omitting it returns 422
+      // ("Field required"). Default to a stable app identity.
+      user_id: req.userId ?? 'maintenanceos',
     };
     if (req.model) body.model = req.model;
     if (req.systemPrompt) body.system_prompt = req.systemPrompt;

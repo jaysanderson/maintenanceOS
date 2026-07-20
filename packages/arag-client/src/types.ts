@@ -181,6 +181,13 @@ export interface AragPredictChatRequest {
   model?: string;
   /** Optional system prompt (in addition to queryContext). */
   systemPrompt?: string;
+  /**
+   * Caller identity for the request. ARAG **requires** `user_id` on
+   * /predict/chat (it 422s without it), so the client sends a stable default
+   * when this isn't supplied. Pass the real end-user id where you have one so
+   * usage is attributable.
+   */
+  userId?: string;
 }
 
 /**
