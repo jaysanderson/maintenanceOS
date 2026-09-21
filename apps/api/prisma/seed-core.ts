@@ -444,13 +444,13 @@ export async function seedDatabase(prisma: PrismaClient) {
       description:
         "Kitchen mixer tap dripping from the spout and base. Likely a perished washer or worn ceramic cartridge. Isolate water at the stop valve, replace the tap washer / mixer cartridge, reseat and test under pressure for leaks.",
       completion:
-        "Isolated supply, replaced the mixer cartridge and inlet washers, resealed the base, tested hot and cold under pressure — no leaks. Materials: mixer cartridge, washers, plumber's tape.",
+        "Isolated supply, replaced the mixer cartridge and inlet washers, resealed the base, tested hot and cold under pressure - no leaks. Materials: mixer cartridge, washers, plumber's tape.",
     },
     "Replace damaged door handle": {
       description:
         "Internal door lever handle loose and not latching. Replace the handle set and strike plate, align the latch, check operation.",
       completion:
-        "Fitted new lever handle set and strike plate, realigned latch, lubricated mechanism — operates smoothly. Materials: handle set, screws.",
+        "Fitted new lever handle set and strike plate, realigned latch, lubricated mechanism - operates smoothly. Materials: handle set, screws.",
     },
     "Patch and paint wall damage": {
       description:
@@ -480,7 +480,7 @@ export async function seedDatabase(prisma: PrismaClient) {
       description:
         "Window flyscreen torn. Re-mesh or replace the screen frame to suit the window opening.",
       completion:
-        "Re-meshed the flyscreen frame and refitted to the window — secure and flush. Materials: fibreglass mesh, spline.",
+        "Re-meshed the flyscreen frame and refitted to the window - secure and flush. Materials: fibreglass mesh, spline.",
     },
     "Assemble storage shelving": {
       description:
@@ -492,23 +492,23 @@ export async function seedDatabase(prisma: PrismaClient) {
       description:
         "Internal door binding against the frame, likely seasonal swelling or dropped hinge. Adjust hinges or plane the edge and re-finish.",
       completion:
-        "Adjusted hinges and eased the binding edge, sealed bare timber — door swings freely.",
+        "Adjusted hinges and eased the binding edge, sealed bare timber - door swings freely.",
     },
     "Emergency make-safe after storm damage": {
       description:
-        "Storm damage — water ingress and loose roofing/cladding presenting a hazard. Attend urgently, make the area safe, tarp/secure, document for insurance and follow-up works.",
+        "Storm damage - water ingress and loose roofing/cladding presenting a hazard. Attend urgently, make the area safe, tarp/secure, document for insurance and follow-up works.",
       completion:
         "Made site safe, secured loose cladding, installed temporary tarp to stop water ingress, photographed damage for the claim. Follow-up repair quoted separately.",
     },
     "Quarterly rental property maintenance": {
       description:
-        "Scheduled quarterly maintenance check across a rental property — smoke alarms, taps/seals, door hardware, minor repairs and a condition report.",
+        "Scheduled quarterly maintenance check across a rental property - smoke alarms, taps/seals, door hardware, minor repairs and a condition report.",
       completion:
         "Completed quarterly checks: tested smoke alarms, checked tap seals and door hardware, actioned minor repairs, condition report filed.",
     },
     "School facilities maintenance inspection": {
       description:
-        "Routine facilities inspection across school buildings — playground hardware, fencing, doors, wet areas, safety items. Log defects and recommend remedial works.",
+        "Routine facilities inspection across school buildings - playground hardware, fencing, doors, wet areas, safety items. Log defects and recommend remedial works.",
       completion:
         "Inspected facilities, logged defects (fencing, two door closers), recommended remedial works with priorities. Report issued.",
     },
@@ -528,7 +528,7 @@ export async function seedDatabase(prisma: PrismaClient) {
       description:
         "Roller/garage door noisy and slow. Service the motor and tracks, lubricate, adjust tension and limits, test safety reverse.",
       completion:
-        "Serviced roller door — lubricated tracks, adjusted spring tension and travel limits, tested auto-reverse. Operates quietly.",
+        "Serviced roller door - lubricated tracks, adjusted spring tension and travel limits, tested auto-reverse. Operates quietly.",
     },
   };
   const jobTypes = ["REPAIR", "MAINTENANCE", "INSPECTION", "EMERGENCY", "QUOTE_ONLY", "RECURRING_SERVICE"];
@@ -808,7 +808,7 @@ export async function seedDatabase(prisma: PrismaClient) {
         employeeId: anomalyWO.assignedEmployeeId,
         hours: 12,
         date: anomalyWO.scheduledStart ?? daysAgo(5),
-        notes: "Extended rework — multiple return visits to diagnose recurring fault",
+        notes: "Extended rework - multiple return visits to diagnose recurring fault",
       },
     });
     teCount++;

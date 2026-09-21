@@ -386,7 +386,7 @@ export async function aiRoutes(app: FastifyInstance) {
           comparables: r.comparables,
           lowConfidence: true,
           message:
-            "Not enough comparable completed jobs to draft a confident quote — " +
+            "Not enough comparable completed jobs to draft a confident quote - " +
             "please quote this one manually.",
         };
       }

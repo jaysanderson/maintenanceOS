@@ -84,7 +84,7 @@ export async function buildApp(): Promise<FastifyInstance> {
         description: [
           "**API-first ERP for a mid-sized property & handyman maintenance business.**",
           "",
-          "The whole product is built on this API — the web app only ever talks to these endpoints, never the database.",
+          "The whole product is built on this API - the web app only ever talks to these endpoints, never the database.",
           "",
           "### Core flow",
           "`Account → Site → Work Order → Quote → Approval → Schedule → Technician Assignment → Job Completion → Invoice → Job Margin`",
@@ -137,7 +137,7 @@ export async function buildApp(): Promise<FastifyInstance> {
       tags: [
         { name: "Auth", description: "Log in and obtain a JWT; inspect the current user. Start here." },
         { name: "Dashboard", description: "Aggregated operational KPIs for the home dashboard (open jobs, SLA breaches, revenue, margin, low stock, etc.)." },
-        { name: "Accounts", description: "Customers — real estate agencies, councils, schools, body corporates, aged-care, commercial, homeowners. List supports search & pagination." },
+        { name: "Accounts", description: "Customers - real estate agencies, councils, schools, body corporates, aged-care, commercial, homeowners. List supports search & pagination." },
         { name: "Sites", description: "Physical properties belonging to an account. Work orders are raised against a site." },
         { name: "Employees", description: "Field & office staff: role, employment type, territory, hourly cost (drives job costing) and skills." },
         { name: "Skills", description: "Skill/clearance catalogue and assignment to employees (e.g. White Card, Working at Heights, Aged-care clearance)." },

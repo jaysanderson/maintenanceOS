@@ -759,7 +759,7 @@ export async function extractPurchaseOrderDraft(
       draft: null,
       lowConfidence: true,
       message: wasImage
-        ? "Read the document, but couldn't pull the line items from this image — " +
+        ? "Read the document, but couldn't pull the line items from this image - " +
           "screenshots and photos often lose the table. For best results, upload the " +
           "original PDF of the purchase order."
         : "Read the document, but couldn't extract line items. Make " +
@@ -1023,7 +1023,7 @@ export async function suggestPartsKit(workOrderId: string): Promise<{
   if (moves.length === 0) {
     return {
       kit: [], usage: [], lowConfidence: true,
-      message: "No parts-usage history for comparable jobs yet — can't suggest a kit confidently.",
+      message: "No parts-usage history for comparable jobs yet - can't suggest a kit confidently.",
     };
   }
 
@@ -1204,7 +1204,7 @@ export async function workOrderTimeline(workOrderId: string): Promise<{
   push(wo.createdAt, `Job raised: ${wo.title}`);
   push(wo.scheduledStart, `Scheduled to start`);
   for (const t of wo.timeEntries) {
-    push(t.date, `${t.employee.firstName} ${t.employee.lastName} logged ${t.hours}h${t.notes ? ` — ${t.notes}` : ""}`);
+    push(t.date, `${t.employee.firstName} ${t.employee.lastName} logged ${t.hours}h${t.notes ? ` - ${t.notes}` : ""}`);
   }
   for (const q of wo.quotes) push(q.createdAt, `Quote ${q.quoteNumber} (${q.status}), total ${q.total}`);
   push(wo.status === "COMPLETED" || wo.status === "INVOICED" || wo.status === "CLOSED" ? wo.updatedAt : null, `Marked ${wo.status}`);
@@ -1296,7 +1296,7 @@ export async function timeEntryAnomaly(workOrderId: string): Promise<{
 
   let narrative = "";
   if (typicalHours === 0) {
-    narrative = "No comparable jobs with logged time yet — can't assess.";
+    narrative = "No comparable jobs with logged time yet - can't assess.";
   } else if (flagged) {
     const system =
       "You are a job-costing reviewer. The logged hours on a job are well above the " +
@@ -1542,7 +1542,7 @@ export async function skillGapSignal(): Promise<{
     .sort((a, b) => b.openJobsNeeding - a.openJobsNeeding);
 
   if (uncoveredSkills.length === 0) {
-    return { uncoveredSkills, narrative: "Every skill required by open jobs has at least two active holders — no coverage gap." };
+    return { uncoveredSkills, narrative: "Every skill required by open jobs has at least two active holders - no coverage gap." };
   }
   const system =
     "You are a workforce planner. Given skills required by open jobs that have zero or only " +
@@ -1852,7 +1852,7 @@ export async function safetyPreflight(workOrderId: string): Promise<{
 
   // Pull relevant safety controls from the ingested safety/policy docs.
   const res = await ask({ query: `What safety controls and SWMS apply to: ${wo.title} (${wo.jobType})?` });
-  const safetyGuidance = isLowConfidenceAnswer(res.answer) ? "No specific safety document matched this job — apply standard controls and review manually." : res.answer;
+  const safetyGuidance = isLowConfidenceAnswer(res.answer) ? "No specific safety document matched this job - apply standard controls and review manually." : res.answer;
 
   return {
     workOrder: wo.workOrderNumber,
@@ -2019,7 +2019,7 @@ export async function financeExceptions(): Promise<{
         : null;
       push("no-po-link", {
         type: "bill", id: b.id, ref: b.billNumber, party,
-        detail: fix ? `No PO linked — matches ${fix.poNumber}` : "No PO linked (no single matching PO)",
+        detail: fix ? `No PO linked - matches ${fix.poNumber}` : "No PO linked (no single matching PO)",
         fix,
       });
     }
@@ -2049,9 +2049,9 @@ export async function financeExceptions(): Promise<{
 
   const META: Record<string, Omit<FinanceExceptionGroup, "kind" | "items">> = {
     "po-total-mismatch": { title: "Bill ≠ PO total (3-way match)", severity: "high", explanation: "These supplier bills don't match their linked purchase-order total beyond tolerance. Per AP policy a 3-way-match variance over tolerance must be reviewed (and a supplier query raised) before the bill is approved for payment." },
-    "disputed-bill": { title: "Disputed supplier bills", severity: "high", explanation: "These bills are marked DISPUTED. AP policy requires the dispute to be resolved (or a credit received) before approval — do not pay a disputed bill." },
+    "disputed-bill": { title: "Disputed supplier bills", severity: "high", explanation: "These bills are marked DISPUTED. AP policy requires the dispute to be resolved (or a credit received) before approval - do not pay a disputed bill." },
     "overdue-invoice": { title: "Overdue customer invoices", severity: "high", explanation: "These customer invoices are past due. AR policy: send an escalating reminder and follow up; consider holding further work for chronic non-payers." },
-    "overdue-bill": { title: "Overdue supplier bills", severity: "high", explanation: "These bills are past their due date — pay or query to avoid supplier holds and late fees." },
+    "overdue-bill": { title: "Overdue supplier bills", severity: "high", explanation: "These bills are past their due date - pay or query to avoid supplier holds and late fees." },
     "no-po-link": { title: "Bill not linked to a PO", severity: "medium", explanation: "These bills aren't linked to a purchase order, so they can't be 3-way matched. Where a single matching open PO exists, link it; otherwise confirm it's an approved non-PO charge." },
     "missing-dates": { title: "Missing issue/due dates", severity: "low", explanation: "These records are missing an issue or due date, which breaks ageing and payment scheduling. Add the dates from the source document." },
   };
@@ -2324,13 +2324,13 @@ export async function commitDate(workOrderId: string, targetDateISO?: string): P
   let recommendedDate: string | null = null;
   let bindingConstraint: string;
   if (short.length === 0) {
-    bindingConstraint = "Parts on hand — capacity only.";
+    bindingConstraint = "Parts on hand - capacity only.";
     recommendedDate = new Date(Date.now() + leadDays * 86400000).toISOString().slice(0, 10);
   } else if (latestEta) {
-    bindingConstraint = `Parts: ${short.map((s) => s.item).join(", ")} — earliest on a PO is ${latestEta}.`;
+    bindingConstraint = `Parts: ${short.map((s) => s.item).join(", ")} - earliest on a PO is ${latestEta}.`;
     recommendedDate = new Date(new Date(latestEta).getTime() + leadDays * 86400000).toISOString().slice(0, 10);
   } else {
-    bindingConstraint = `Parts short with no PO on order: ${short.map((s) => s.item).join(", ")} — raise a PO first.`;
+    bindingConstraint = `Parts short with no PO on order: ${short.map((s) => s.item).join(", ")} - raise a PO first.`;
     recommendedDate = null;
   }
 

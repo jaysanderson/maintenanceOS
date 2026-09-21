@@ -26,7 +26,7 @@ export async function systemRoutes(app: FastifyInstance) {
   app.post(
     "/reset",
     {
-      schema: { tags: ["System"], summary: "Reset demo data — wipe & re-seed (Admin/Manager)", body: resetSchema },
+      schema: { tags: ["System"], summary: "Reset demo data - wipe & re-seed (Admin/Manager)", body: resetSchema },
       preHandler: requireRole(...ADMIN_ROLES),
     },
     async (req) => {
