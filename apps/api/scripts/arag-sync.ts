@@ -95,7 +95,7 @@ async function syncAccounts(): Promise<void> {
 - Account manager: ${a.accountManager ?? "—"}
 - Payment terms: ${a.paymentTerms ?? "—"}
 - Primary contact: ${a.primaryContactName ?? "—"} (${a.email ?? "—"}, ${a.phone ?? "—"})
-- Sites: ${a.sites.length} — ${a.sites.map((s) => `${s.name} (${s.suburb} ${s.state})`).join("; ")}
+- Sites: ${a.sites.length} - ${a.sites.map((s) => `${s.name} (${s.suburb} ${s.state})`).join("; ")}
 - Open work orders: ${openWO}
 - Total work orders: ${a.workOrders.length}
 - Outstanding invoiced amount: ${money(outstanding)}
@@ -192,7 +192,7 @@ async function syncQuotes(): Promise<void> {
     const body = `# Quote ${q.quoteNumber}
 
 - Account: ${q.account.name}
-- Work order: ${q.workOrder.workOrderNumber} — ${q.workOrder.title}
+- Work order: ${q.workOrder.workOrderNumber} - ${q.workOrder.title}
 - Status: ${q.status}
 - Labour: ${q.labourHours}h @ ${money(q.labourRate)} = ${money(q.labourHours * q.labourRate)}
 - Materials: ${money(q.materialCost)} · Subcontractor: ${money(q.subcontractorCost)} · Equipment: ${money(q.equipmentCost)}
